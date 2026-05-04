@@ -1,0 +1,89 @@
+# ⚡ Napi Core Configuration
+# 2 CPU / 2 GB RAM / ~100 GB SSD
+# Scale values up when upgrading hardware.
+
+# === ДНК-лимиты ===
+dna:
+  max_message_length: 4000
+  max_visible_tokens: 512
+  supported_languages:
+    - ru
+    - en
+    - pl
+  vision_enabled: false
+
+# === Движок инференса ===
+engine:
+  # Локальная GGUF модель (llama-cpp-python)
+  local:
+    enabled: false
+    model_path: "./models/napi-2b-q4_k_m.gguf"
+    n_ctx: 2048
+    n_gpu_layers: 0
+    n_threads: 2
+    max_tokens: 512
+    temperature: 0.55
+
+  # OpenRouter — фоллбек и/или основной провайдер
+  openrouter:
+    enabled: true
+    api_key: ""  # Переопределяется через OPENROUTER_API_KEY в .env
+    base_url: "https://openrouter.ai/api/v1"
+    chat_model: "openai/gpt-oss-20b:free"
+    teacher_model: "openai/gpt-oss-20b:free"
+    filter_model: "openai/gpt-oss-20b:free"
+    reasoning_model: "openai/gpt-oss-20b:free"
+    vision_model: "nvidia/nemotron-nano-12b-v2-vl:free"
+    timeout_seconds: 90
+    max_concurrent: 2
+
+# === Gatekeeper (префильтрация без нейросети) ===
+gatekeeper:
+  max_input_length: 4000
+  blocked_patterns:
+    - "(?i)(malware|exploit|hack|phishing|credential.theft)"
+    - "(?i)(violence|abuse|doxxing)"
+  max_vision_question_length: 2000
+
+# === База данных ===
+storage:
+  database_path: "./storage/napi_brain.db"
+  max_history_messages: 24
+  max_memory_notes: 12
+  max_knowledge_chunks: 6
+  max_reflected_rules: 8
+  note_max_length: 1000
+
+# === Soft Learning (Учитель) ===
+soft_learning:
+  enabled: true
+  teacher_provider: "openrouter"  # "openrouter" или "none"
+  min_score_for_revision: 8
+  temperatures:
+    chat: 0.55
+    reasoning: 0.25
+    filter: 0.0
+    teacher: 0.1
+    revision: 0.4
+    vision: 0.35
+
+# === Рассуждения ===
+reasoning:
+  enabled: true
+  max_context_chars: 12000
+  max_tokens: 450
+
+# === Модели: политика открытых весов ===
+model_policy:
+  require_open_weights: true
+  allowlist:
+    - "openai/gpt-oss-20b:free"
+    - "openai/gpt-oss-120b:free"
+    - "nvidia/nemotron-nano-12b-v2-vl:free"
+
+# === Сервер ===
+server:
+  host: "0.0.0.0"
+  port: 8000
+  workers: 1
+  app_name: "Napi"
