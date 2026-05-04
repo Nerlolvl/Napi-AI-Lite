@@ -3,30 +3,18 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from pathlib import Path
 from typing import Any
 
 import httpx
-import yaml
+
+from config_loader import CONFIG
 
 log = logging.getLogger("napi.engine")
-
-CONFIG_PATH = Path(__file__).resolve().parents[1] / "config.yaml"
-
-
-def _load_config() -> dict:
-    if CONFIG_PATH.exists():
-        with CONFIG_PATH.open("r", encoding="utf-8") as f:
-            return yaml.safe_load(f) or {}
-    return {}
-
-
-CONFIG = _load_config()
 
 _LOCAL = CONFIG.get("engine", {}).get("local", {})
 _PROVIDER = CONFIG.get("engine", {}).get("provider", {})
 
-_REQUIRED_MODELS = ["chat_model", "teacher_model", "filter_model", "reasoning_model"]
+_OPTIONAL_MODELS = ["teacher_model", "filter_model", "reasoning_model"]
 
 
 class LocalEngine:
@@ -85,8 +73,8 @@ class LocalEngine:
 class ProviderEngine:
     """Remote inference via any OpenAI-compatible API.
 
-    Compatible with: LM Studio, Ollama, vLLM, Together AI,
-    Groq, OpenAI, and any server implementing /chat/completions.
+    Uses a single persistent httpx.AsyncClient for connection reuse
+    and reduced memory allocation on 2-core / 2 GB machines.
     """
 
     def __init__(self) -> None:
@@ -98,16 +86,35 @@ class ProviderEngine:
         self.max_concurrent = _PROVIDER.get("max_concurrent", 2)
         self._semaphore = asyncio.Semaphore(self.max_concurrent)
         self._extra_headers = _PROVIDER.get("extra_headers", {})
+        self._client: httpx.AsyncClient | None = None
 
-        missing_models = [
-            key for key in _REQUIRED_MODELS if not _PROVIDER.get(key)
+        missing_optional_models = [
+            key for key in _OPTIONAL_MODELS if not _PROVIDER.get(key)
         ]
-        if missing_models and _PROVIDER.get("enabled", True):
+        if missing_optional_models and _PROVIDER.get("enabled", True):
             log.warning(
-                "Config: missing required models: %s. "
-                "Set them in config.yaml under engine.provider.",
-                ", ".join(missing_models),
+                "Config: optional helper models are not set: %s. "
+                "Teacher/filter/reasoning will be skipped until configured.",
+                ", ".join(missing_optional_models),
             )
+
+    async def _get_client(self) -> httpx.AsyncClient:
+        if self._client is None or self._client.is_closed:
+            self._client = httpx.AsyncClient(
+                timeout=httpx.Timeout(self.timeout, connect=15.0),
+                limits=httpx.Limits(
+                    max_connections=self.max_concurrent + 1,
+                    max_keepalive_connections=self.max_concurrent,
+                    keepalive_expiry=120,
+                ),
+                http2=False,
+            )
+        return self._client
+
+    async def close(self) -> None:
+        if self._client is not None and not self._client.is_closed:
+            await self._client.aclose()
+            self._client = None
 
     def _headers(self) -> dict[str, str]:
         headers = {
@@ -145,15 +152,15 @@ class ProviderEngine:
             "temperature": temperature,
             "max_tokens": max_tokens,
         }
+        client = await self._get_client()
         async with self._semaphore:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
-                response = await client.post(
-                    f"{self.base_url}/chat/completions",
-                    headers=self._headers(),
-                    json=payload,
-                )
-                response.raise_for_status()
-                data = response.json()
+            response = await client.post(
+                f"{self.base_url}/chat/completions",
+                headers=self._headers(),
+                json=payload,
+            )
+            response.raise_for_status()
+            data = response.json()
         return data["choices"][0]["message"]["content"]
 
 
@@ -168,6 +175,17 @@ class InferenceEngine:
         if _LOCAL.get("enabled", False):
             self.local.load()
 
+    async def shutdown(self) -> None:
+        await self.remote.close()
+
+    @property
+    def remote_ready(self) -> bool:
+        return bool(self.remote.base_url and self.remote.chat_model)
+
+    @property
+    def can_chat(self) -> bool:
+        return self.local.available or self.remote_ready
+
     async def chat(
         self,
         *,
@@ -177,11 +195,16 @@ class InferenceEngine:
         max_tokens: int | None = None,
         prefer_local: bool = False,
     ) -> str:
-        if prefer_local and self.local.available:
+        if (prefer_local or not self.remote_ready) and self.local.available:
             prompt = self._messages_to_prompt(messages)
             return self.local.generate(
                 prompt,
                 max_tokens=max_tokens or _LOCAL.get("max_tokens", 512),
+            )
+        if not self.remote_ready:
+            raise RuntimeError(
+                "Napi has no primary model configured. Add a local GGUF model "
+                "or set engine.provider.base_url and engine.provider.chat_model in config.yaml"
             )
         return await self.remote.chat(
             model=model,

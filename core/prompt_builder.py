@@ -1,28 +1,15 @@
 from __future__ import annotations
 
 import re
-from pathlib import Path
 from typing import Any
 
-import yaml
+from config_loader import CONFIG
 
-CONFIG_PATH = Path(__file__).resolve().parents[1] / "config.yaml"
+DNA = CONFIG.get("dna", {})
+STORAGE = CONFIG.get("storage", {})
 
-
-def _load_config() -> dict:
-    if CONFIG_PATH.exists():
-        with CONFIG_PATH.open("r", encoding="utf-8") as f:
-            return yaml.safe_load(f) or {}
-    return {}
-
-
-CONFIG = _load_config()
-
-_DNA = CONFIG.get("dna", {})
-_STORAGE = CONFIG.get("storage", {})
-
-MAX_VISIBLE_TOKENS_HINT = _DNA.get("max_visible_tokens", 512)
-SUPPORTED_LANGS = _DNA.get("supported_languages", ["ru", "en", "pl"])
+MAX_VISIBLE_TOKENS_HINT = DNA.get("max_visible_tokens", 512)
+SUPPORTED_LANGS = DNA.get("supported_languages", ["ru", "en", "pl"])
 
 NAPI_SYSTEM_PROMPT = """\
 # [SYSTEM_PROMPT_NAPI_CORE_V1]
