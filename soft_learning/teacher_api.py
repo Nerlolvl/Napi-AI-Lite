@@ -7,7 +7,7 @@ from typing import Any
 
 log = logging.getLogger("napi.teacher")
 
-from core.engine import InferenceEngine, OpenRouterEngine
+from core.engine import InferenceEngine
 from core.prompt_builder import TEACHER_SYSTEM_PROMPT, REVISION_SYSTEM_PROMPT
 
 

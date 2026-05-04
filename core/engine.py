@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from pathlib import Path
 from typing import Any
 
@@ -23,8 +24,7 @@ def _load_config() -> dict:
 CONFIG = _load_config()
 
 _LOCAL = CONFIG.get("engine", {}).get("local", {})
-_OPENROUTER = CONFIG.get("engine", {}).get("openrouter", {})
-_DNA = CONFIG.get("dna", {})
+_PROVIDER = CONFIG.get("engine", {}).get("provider", {})
 
 
 class LocalEngine:
@@ -80,26 +80,32 @@ class LocalEngine:
         return self._loaded
 
 
-class OpenRouterEngine:
-    """Remote inference via OpenRouter API."""
+class OpenAICompatibleEngine:
+    """Remote inference via any OpenAI-compatible API.
+
+    Compatible with: OpenRouter, LM Studio, Ollama, vLLM, Together AI,
+    Groq, OpenAI, and any server implementing /chat/completions endpoint.
+    """
 
     def __init__(self) -> None:
-        import os
-
-        self.api_key = os.environ.get(
-            "OPENROUTER_API_KEY", _OPENROUTER.get("api_key", "")
-        )
-        self.base_url = _OPENROUTER.get("base_url", "https://openrouter.ai/api/v1")
-        self.chat_model = _OPENROUTER.get("chat_model", "openai/gpt-oss-20b:free")
-        self.timeout = _OPENROUTER.get("timeout_seconds", 90)
-        self.max_concurrent = _OPENROUTER.get("max_concurrent", 2)
+        api_key_env = _PROVIDER.get("api_key_env", "OPENAI_API_KEY")
+        self.api_key = os.environ.get(api_key_env, _PROVIDER.get("api_key", ""))
+        self.base_url = _PROVIDER.get("base_url", "https://openrouter.ai/api/v1")
+        self.chat_model = _PROVIDER.get("chat_model", "openai/gpt-oss-20b:free")
+        self.timeout = _PROVIDER.get("timeout_seconds", 90)
+        self.max_concurrent = _PROVIDER.get("max_concurrent", 2)
         self._semaphore = asyncio.Semaphore(self.max_concurrent)
+        self._extra_headers = _PROVIDER.get("extra_headers", {})
 
     def _headers(self) -> dict[str, str]:
-        return {
-            "Authorization": f"Bearer {self.api_key}",
+        headers = {
             "Content-Type": "application/json",
         }
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        for key, value in self._extra_headers.items():
+            headers[key] = value
+        return headers
 
     async def chat(
         self,
@@ -109,8 +115,11 @@ class OpenRouterEngine:
         temperature: float = 0.55,
         max_tokens: int = 512,
     ) -> str:
-        if not self.api_key:
-            raise RuntimeError("OPENROUTER_API_KEY is not configured")
+        if not self.api_key and not _PROVIDER.get("api_key", ""):
+            raise RuntimeError(
+                f"API key not configured. Set {self._extra_headers.get('api_key_env', 'OPENAI_API_KEY')} "
+                "environment variable or api_key in config.yaml"
+            )
 
         payload = {
             "model": model or self.chat_model,
@@ -131,11 +140,11 @@ class OpenRouterEngine:
 
 
 class InferenceEngine:
-    """Unified engine: local GGUF first, OpenRouter fallback."""
+    """Unified engine: local GGUF first, OpenAI-compatible fallback."""
 
     def __init__(self) -> None:
         self.local = LocalEngine()
-        self.remote = OpenRouterEngine()
+        self.remote = OpenAICompatibleEngine()
 
     def init_local(self) -> None:
         if _LOCAL.get("enabled", False):
@@ -159,7 +168,7 @@ class InferenceEngine:
         return await self.remote.chat(
             model=model,
             messages=messages,
-            temperature=temperature or _DNA.get("max_visible_tokens", 0.55),
+            temperature=temperature or 0.55,
             max_tokens=max_tokens or 512,
         )
 
