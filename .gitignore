@@ -14,7 +14,6 @@ models/*.bin
 .venv/
 venv/
 
-napi_brain.db
 napi_brain.db-shm
 napi_brain.db-wal
 data/
