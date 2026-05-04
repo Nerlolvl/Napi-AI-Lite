@@ -26,6 +26,8 @@ CONFIG = _load_config()
 _LOCAL = CONFIG.get("engine", {}).get("local", {})
 _PROVIDER = CONFIG.get("engine", {}).get("provider", {})
 
+_REQUIRED_MODELS = ["chat_model", "teacher_model", "filter_model", "reasoning_model"]
+
 
 class LocalEngine:
     """GGUF model inference via llama-cpp-python."""
@@ -80,22 +82,32 @@ class LocalEngine:
         return self._loaded
 
 
-class OpenAICompatibleEngine:
+class ProviderEngine:
     """Remote inference via any OpenAI-compatible API.
 
-    Compatible with: OpenRouter, LM Studio, Ollama, vLLM, Together AI,
-    Groq, OpenAI, and any server implementing /chat/completions endpoint.
+    Compatible with: LM Studio, Ollama, vLLM, Together AI,
+    Groq, OpenAI, and any server implementing /chat/completions.
     """
 
     def __init__(self) -> None:
-        api_key_env = _PROVIDER.get("api_key_env", "OPENAI_API_KEY")
-        self.api_key = os.environ.get(api_key_env, _PROVIDER.get("api_key", ""))
-        self.base_url = _PROVIDER.get("base_url", "https://openrouter.ai/api/v1")
-        self.chat_model = _PROVIDER.get("chat_model", "openai/gpt-oss-20b:free")
+        api_key_env = _PROVIDER.get("api_key_env", "NAPI_API_KEY")
+        self.api_key = os.environ.get(api_key_env, "")
+        self.base_url = _PROVIDER.get("base_url", "")
+        self.chat_model = _PROVIDER.get("chat_model", "")
         self.timeout = _PROVIDER.get("timeout_seconds", 90)
         self.max_concurrent = _PROVIDER.get("max_concurrent", 2)
         self._semaphore = asyncio.Semaphore(self.max_concurrent)
         self._extra_headers = _PROVIDER.get("extra_headers", {})
+
+        missing_models = [
+            key for key in _REQUIRED_MODELS if not _PROVIDER.get(key)
+        ]
+        if missing_models and _PROVIDER.get("enabled", True):
+            log.warning(
+                "Config: missing required models: %s. "
+                "Set them in config.yaml under engine.provider.",
+                ", ".join(missing_models),
+            )
 
     def _headers(self) -> dict[str, str]:
         headers = {
@@ -115,14 +127,20 @@ class OpenAICompatibleEngine:
         temperature: float = 0.55,
         max_tokens: int = 512,
     ) -> str:
-        if not self.api_key and not _PROVIDER.get("api_key", ""):
+        if not self.base_url:
             raise RuntimeError(
-                f"API key not configured. Set {self._extra_headers.get('api_key_env', 'OPENAI_API_KEY')} "
-                "environment variable or api_key in config.yaml"
+                "Provider base_url not configured. "
+                "Set engine.provider.base_url in config.yaml"
+            )
+        model = model or self.chat_model
+        if not model:
+            raise RuntimeError(
+                "No model specified. "
+                "Set chat_model (and other models) in config.yaml under engine.provider"
             )
 
         payload = {
-            "model": model or self.chat_model,
+            "model": model,
             "messages": messages,
             "temperature": temperature,
             "max_tokens": max_tokens,
@@ -140,11 +158,11 @@ class OpenAICompatibleEngine:
 
 
 class InferenceEngine:
-    """Unified engine: local GGUF first, OpenAI-compatible fallback."""
+    """Unified engine: local GGUF first, remote provider fallback."""
 
     def __init__(self) -> None:
         self.local = LocalEngine()
-        self.remote = OpenAICompatibleEngine()
+        self.remote = ProviderEngine()
 
     def init_local(self) -> None:
         if _LOCAL.get("enabled", False):

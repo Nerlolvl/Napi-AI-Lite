@@ -60,11 +60,11 @@ MAX_RULES = STORAGE_CFG.get("max_reflected_rules", 8)
 NOTE_MAX_LENGTH = STORAGE_CFG.get("note_max_length", 1000)
 
 PROVIDER_CFG = CONFIG.get("engine", {}).get("provider", {})
-CHAT_MODEL = PROVIDER_CFG.get("chat_model", "openai/gpt-oss-20b:free")
-TEACHER_MODEL = PROVIDER_CFG.get("teacher_model", "openai/gpt-oss-20b:free")
-FILTER_MODEL = PROVIDER_CFG.get("filter_model", "openai/gpt-oss-20b:free")
-REASONING_MODEL = PROVIDER_CFG.get("reasoning_model", "openai/gpt-oss-20b:free")
-VISION_MODEL = PROVIDER_CFG.get("vision_model", "nvidia/nemotron-nano-12b-v2-vl:free")
+CHAT_MODEL = PROVIDER_CFG.get("chat_model", "")
+TEACHER_MODEL = PROVIDER_CFG.get("teacher_model", "")
+FILTER_MODEL = PROVIDER_CFG.get("filter_model", "")
+REASONING_MODEL = PROVIDER_CFG.get("reasoning_model", "")
+VISION_MODEL = PROVIDER_CFG.get("vision_model", "")
 
 TEMPS = SOFT_CFG.get("temperatures", {})
 
