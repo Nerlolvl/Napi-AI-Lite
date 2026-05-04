@@ -91,7 +91,7 @@ class ProviderEngine:
 
     def __init__(self) -> None:
         api_key_env = _PROVIDER.get("api_key_env", "NAPI_API_KEY")
-        self.api_key = os.environ.get(api_key_env, "")
+        self.api_key = os.environ.get(api_key_env, "") or _PROVIDER.get("api_key", "")
         self.base_url = _PROVIDER.get("base_url", "")
         self.chat_model = _PROVIDER.get("chat_model", "")
         self.timeout = _PROVIDER.get("timeout_seconds", 90)
