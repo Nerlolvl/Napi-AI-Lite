@@ -11,7 +11,8 @@ from typing import Any
 class NapiBrain:
     """Unified SQLite database — memory, knowledge, and reflection diary.
 
-    Uses WAL mode and memory-optimized pragmas for 2 GB RAM operation.
+    Uses a single persistent connection with WAL mode and memory-optimized
+    pragmas for 2-core / 2 GB RAM operation.
     """
 
     def __init__(self, database_path: str, max_note_length: int = 1000) -> None:
@@ -19,19 +20,42 @@ class NapiBrain:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = Lock()
         self._max_note_length = max_note_length
+        self._conn: sqlite3.Connection | None = None
         self._init_db()
 
-    def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.path)
+    def _get_conn(self) -> sqlite3.Connection:
+        if self._conn is not None:
+            try:
+                self._conn.execute("SELECT 1")
+                return self._conn
+            except sqlite3.Error:
+                try:
+                    self._conn.close()
+                except Exception:
+                    pass
+                self._conn = None
+        conn = sqlite3.connect(str(self.path), check_same_thread=False)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=NORMAL")
-        conn.execute("PRAGMA cache_size=-1500")
+        conn.execute("PRAGMA cache_size=-512")
         conn.execute("PRAGMA temp_store=MEMORY")
+        conn.execute("PRAGMA mmap_size=8388608")
+        conn.execute("PRAGMA page_size=4096")
+        self._conn = conn
         return conn
 
+    def close(self) -> None:
+        if self._conn is not None:
+            try:
+                self._conn.close()
+            except Exception:
+                pass
+            self._conn = None
+
     def _init_db(self) -> None:
-        with self._lock, self._connect() as conn:
+        with self._lock:
+            conn = self._get_conn()
             conn.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS messages (
@@ -95,8 +119,7 @@ class NapiBrain:
                     ON reflection_diary(category);
                 """
             )
-
-    # ── Messages ────────────────────────────────────────────────────────
+            conn.commit()
 
     def add_message(
         self,
@@ -105,16 +128,19 @@ class NapiBrain:
         content: str,
         metadata: dict[str, Any] | None = None,
     ) -> int:
-        with self._lock, self._connect() as conn:
+        with self._lock:
+            conn = self._get_conn()
             cursor = conn.execute(
                 "INSERT INTO messages (session_id, role, content, created_at, metadata) "
                 "VALUES (?, ?, ?, ?, ?)",
                 (session_id, role, content, time(), json.dumps(metadata or {})),
             )
+            conn.commit()
             return int(cursor.lastrowid)
 
     def recent_messages(self, session_id: str, limit: int) -> list[dict[str, str]]:
-        with self._lock, self._connect() as conn:
+        with self._lock:
+            conn = self._get_conn()
             rows = conn.execute(
                 "SELECT role, content FROM messages "
                 "WHERE session_id = ? ORDER BY id DESC LIMIT ?",
@@ -122,27 +148,26 @@ class NapiBrain:
             ).fetchall()
         return [{"role": row["role"], "content": row["content"]} for row in reversed(rows)]
 
-    # ── Notes ───────────────────────────────────────────────────────────
-
     def add_note(self, session_id: str, note: str) -> None:
         clean_note = note.strip()[: self._max_note_length]
         if not clean_note:
             return
-        with self._lock, self._connect() as conn:
+        with self._lock:
+            conn = self._get_conn()
             conn.execute(
                 "INSERT INTO notes (session_id, note, created_at) VALUES (?, ?, ?)",
                 (session_id, clean_note, time()),
             )
+            conn.commit()
 
     def recent_notes(self, session_id: str, limit: int) -> list[str]:
-        with self._lock, self._connect() as conn:
+        with self._lock:
+            conn = self._get_conn()
             rows = conn.execute(
                 "SELECT note FROM notes WHERE session_id = ? ORDER BY id DESC LIMIT ?",
                 (session_id, limit),
             ).fetchall()
         return [row["note"] for row in rows]
-
-    # ── Feedback ────────────────────────────────────────────────────────
 
     def add_feedback(
         self,
@@ -151,30 +176,33 @@ class NapiBrain:
         rating: int,
         comment: str,
     ) -> None:
-        with self._lock, self._connect() as conn:
+        with self._lock:
+            conn = self._get_conn()
             conn.execute(
                 "INSERT INTO feedback (session_id, message_id, rating, comment, created_at) "
                 "VALUES (?, ?, ?, ?, ?)",
                 (session_id, message_id, rating, comment[: self._max_note_length], time()),
             )
+            conn.commit()
         if comment.strip():
             self.add_note(session_id, f"User feedback: rating={rating}; {comment.strip()}")
-
-    # ── Reflection Diary ────────────────────────────────────────────────
 
     def add_reflected_rule(self, rule: str, source: str = "teacher", category: str = "general") -> None:
         clean_rule = rule.strip()[: self._max_note_length]
         if not clean_rule:
             return
-        with self._lock, self._connect() as conn:
+        with self._lock:
+            conn = self._get_conn()
             conn.execute(
                 "INSERT INTO reflection_diary (rule, source, category, created_at) "
                 "VALUES (?, ?, ?, ?)",
                 (clean_rule, source, category, time()),
             )
+            conn.commit()
 
     def get_reflected_rules(self, category: str | None = None, limit: int = 8) -> list[str]:
-        with self._lock, self._connect() as conn:
+        with self._lock:
+            conn = self._get_conn()
             if category:
                 rows = conn.execute(
                     "SELECT rule FROM reflection_diary WHERE category = ? "
@@ -188,11 +216,10 @@ class NapiBrain:
                 ).fetchall()
         return [row["rule"] for row in rows]
 
-    # ── Knowledge ──────────────────────────────────────────────────────
-
     def upsert_document(self, source: str, title: str, content: str) -> int:
         chunks = _chunk_text(content)
-        with self._lock, self._connect() as conn:
+        with self._lock:
+            conn = self._get_conn()
             conn.execute("DELETE FROM knowledge_fts WHERE rowid IN "
                          "(SELECT k.id FROM knowledge_chunks k WHERE k.doc_id = "
                          "(SELECT d.id FROM knowledge_docs d WHERE d.source = ?))",
@@ -218,6 +245,7 @@ class NapiBrain:
                     "INSERT INTO knowledge_fts (rowid, title, content, source) VALUES (?, ?, ?, ?)",
                     (chunk_id, title, chunk, source),
                 )
+            conn.commit()
         return len(chunks)
 
     def search_knowledge(self, query: str, limit: int = 6) -> list[dict[str, str]]:
@@ -225,7 +253,8 @@ class NapiBrain:
         if not clean_query:
             return []
 
-        with self._lock, self._connect() as conn:
+        with self._lock:
+            conn = self._get_conn()
             rows = conn.execute(
                 "SELECT c.title, c.content, d.source "
                 "FROM knowledge_fts f "
@@ -247,7 +276,8 @@ class NapiBrain:
             return 0
 
         total = 0
-        for path in sorted(root.rglob("*.md")):
+        supported_suffixes = {".md", ".txt"}
+        for path in sorted(p for p in root.rglob("*") if p.suffix.lower() in supported_suffixes):
             text = path.read_text(encoding="utf-8")
             title = _first_heading(text) or path.stem.replace("_", " ").title()
             total += self.upsert_document(str(path), title, text)

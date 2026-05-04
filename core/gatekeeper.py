@@ -3,20 +3,9 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-import yaml
+from config_loader import CONFIG
 
-CONFIG_PATH = __import__("pathlib").Path(__file__).resolve().parents[1] / "config.yaml"
-
-
-def _load_gatekeeper_config() -> dict:
-    if CONFIG_PATH.exists():
-        with CONFIG_PATH.open("r", encoding="utf-8") as f:
-            cfg = yaml.safe_load(f) or {}
-        return cfg.get("gatekeeper", {})
-    return {}
-
-
-_GATE = _load_gatekeeper_config()
+_GATE = CONFIG.get("gatekeeper", {})
 
 _MAX_INPUT_LENGTH = _GATE.get("max_input_length", 4000)
 _MAX_VISION_LENGTH = _GATE.get("max_vision_question_length", 2000)

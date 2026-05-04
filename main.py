@@ -3,14 +3,17 @@ from __future__ import annotations
 import gc
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 
 import yaml
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from core.engine import InferenceEngine
 from core.gatekeeper import GateResult, detect_language, gate_check
+from core.neural_brain import NeuralBrain
 from core.prompt_builder import (
     FILTER_SYSTEM_PROMPT,
     REASONING_SYSTEM_PROMPT,
@@ -19,15 +22,16 @@ from core.prompt_builder import (
     extract_reflected_rules,
     strip_think_tags,
 )
+from core.self_brain import self_brain_answer
 from soft_learning.rule_extractor import process_evaluation
 from soft_learning.teacher_api import evaluate_answer, revise_answer
 from storage.db_manager import NapiBrain
 
 log = logging.getLogger("napi")
 
-# ── Config ───────────────────────────────────────────────────────────
+# ── Config (single load) ───────────────────────────────────────────────
 
-CONFIG_PATH = __import__("pathlib").Path(__file__).resolve().parent / "config.yaml"
+CONFIG_PATH = Path(__file__).resolve().parent / "config.yaml"
 
 
 def _load_config() -> dict:
@@ -74,6 +78,9 @@ DB_PATH = STORAGE_CFG.get("database_path", "./storage/napi_brain.db")
 
 brain = NapiBrain(DB_PATH, max_note_length=NOTE_MAX_LENGTH)
 engine = InferenceEngine()
+neural_brain = NeuralBrain()
+
+_request_count = 0
 
 
 # ── Schemas ────────────────────────────────────────────────────────────
@@ -118,10 +125,43 @@ class FeedbackResponse(BaseModel):
     ok: bool
 
 
+class KnowledgeAddRequest(BaseModel):
+    source: str = Field(min_length=1, max_length=500)
+    title: str = Field(min_length=1, max_length=200)
+    content: str = Field(min_length=1)
+
+
+class KnowledgeAddResponse(BaseModel):
+    ok: bool
+    chunks: int
+
+
+class KnowledgeIngestRequest(BaseModel):
+    directory: str = "./knowledge"
+
+
+class KnowledgeIngestResponse(BaseModel):
+    ok: bool
+    directory: str
+    chunks: int
+
+
+class KnowledgeSearchResponse(BaseModel):
+    results: list[dict[str, str]]
+
+
 class HealthResponse(BaseModel):
     status: str
     name: str
     local_model_loaded: bool
+    provider_configured: bool
+    can_chat: bool
+    autonomous_mode: bool
+    self_brain_mode: bool
+    neural_brain_loaded: bool
+    neural_vocab_size: int
+    neural_model_path: str
+    helper_models: dict[str, bool]
 
 
 # ── App ────────────────────────────────────────────────────────────────
@@ -129,8 +169,13 @@ class HealthResponse(BaseModel):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     engine.init_local()
+    neural_brain.load()
     log.info("Napi started. Local model loaded: %s", engine.local.available)
+    log.info("Neural brain loaded: %s (vocab=%s)", neural_brain.available, neural_brain.vocab_size)
     yield
+    await engine.shutdown()
+    brain.close()
+    log.info("Napi shut down cleanly.")
 
 
 app = FastAPI(
@@ -141,6 +186,34 @@ app = FastAPI(
 )
 
 
+@app.exception_handler(RuntimeError)
+async def runtime_error_handler(request, exc: RuntimeError) -> JSONResponse:
+    detail = str(exc)
+    if "Provider base_url not configured" in detail or "No model specified" in detail:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "detail": detail,
+                "hint": (
+                    "Napi server is running, but no model provider is configured. "
+                    "Set engine.provider.base_url and model names in config.yaml, then restart the server."
+                ),
+            },
+        )
+    if "no primary model configured" in detail:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "detail": detail,
+                "hint": (
+                    "Soft-learning teacher is optional, but Napi still needs one primary model: "
+                    "either a local GGUF file in engine.local or a chat provider in engine.provider."
+                ),
+            },
+        )
+    return JSONResponse(status_code=500, content={"detail": detail})
+
+
 # ── Endpoints ──────────────────────────────────────────────────────────
 
 @app.get("/health", response_model=HealthResponse)
@@ -149,12 +222,25 @@ async def health() -> HealthResponse:
         status="ok",
         name=SERVER_CFG.get("app_name", "Napi"),
         local_model_loaded=engine.local.available,
+        provider_configured=engine.remote_ready,
+        can_chat=True,
+        autonomous_mode=not engine.can_chat and not neural_brain.available,
+        self_brain_mode=not engine.can_chat,
+        neural_brain_loaded=neural_brain.available,
+        neural_vocab_size=neural_brain.vocab_size,
+        neural_model_path=str(neural_brain.model_path),
+        helper_models={
+            "teacher": bool(TEACHER_MODEL and PROVIDER_CFG.get("base_url")),
+            "filter": bool(FILTER_MODEL and PROVIDER_CFG.get("base_url")),
+            "reasoning": bool(REASONING_MODEL and PROVIDER_CFG.get("base_url")),
+        },
     )
 
 
 @app.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest) -> ChatResponse:
-    # ── Шаг 1: Gatekeeper (префильтрация без нейросети) ──
+    global _request_count
+
     gate = gate_check(request.message)
     if not gate.allowed:
         return ChatResponse(
@@ -167,7 +253,6 @@ async def chat(request: ChatRequest) -> ChatResponse:
 
     language = request.language if request.language != "auto" else gate.language
 
-    # ── Шаг 2: Сборка контекста (Prompt Builder) ──
     notes = brain.recent_notes(request.session_id, MAX_NOTES)
     knowledge_chunks = brain.search_knowledge(gate.cleaned_text, limit=MAX_CHUNKS)
     reflected_rules = extract_reflected_rules(notes)
@@ -181,8 +266,46 @@ async def chat(request: ChatRequest) -> ChatResponse:
         reflected_rules=reflected_rules,
     )
 
-    # ── Шаг 2a: Фильтрация через модель (опционально) ──
-    if PROVIDER_CFG.get("enabled", True):
+    if not engine.can_chat:
+        neural_context = neural_brain.think(
+            gate.cleaned_text,
+            knowledge_chunks=knowledge_chunks,
+            notes=notes,
+        ).as_dict()
+        result = self_brain_answer(
+            gate.cleaned_text,
+            notes=notes,
+            knowledge_chunks=knowledge_chunks,
+            reflected_rules=reflected_rules,
+            neural_context=neural_context,
+            language=language,
+        )
+        if result.learned_note:
+            brain.add_note(request.session_id, result.learned_note)
+        brain.add_message(request.session_id, "user", gate.cleaned_text)
+        brain.add_message(
+            request.session_id,
+            "assistant",
+            result.answer,
+            metadata={
+                "model": "napi-neural-brain" if neural_brain.available else "napi-self-brain",
+                "language": language,
+                "neural": neural_context,
+            },
+        )
+        _request_count += 1
+        if _request_count % 50 == 0:
+            gc.collect()
+        return ChatResponse(
+            answer=result.answer,
+            session_id=request.session_id,
+            model="napi-neural-brain" if neural_brain.available else "napi-self-brain",
+            improved=False,
+            think=result.think,
+            language=language,
+        )
+
+    if _helper_model_ready(FILTER_MODEL):
         try:
             filter_result = await _model_filter(gate.cleaned_text)
             if filter_result and filter_result.get("memory_note"):
@@ -193,8 +316,7 @@ async def chat(request: ChatRequest) -> ChatResponse:
         except Exception:
             pass
 
-    # ── Шаг 3: Размышление + Генерация ──
-    if ENABLE_REASONING:
+    if ENABLE_REASONING and _helper_model_ready(REASONING_MODEL):
         try:
             brief = await engine.chat(
                 messages=[
@@ -213,28 +335,27 @@ async def chat(request: ChatRequest) -> ChatResponse:
         except Exception as exc:
             log.warning("Reasoning failed: %s", exc)
 
-    # ── Основная генерация ──
     raw_answer = await engine.chat(
         messages=messages,
         model=CHAT_MODEL,
         temperature=TEMPS.get("chat", 0.55),
         max_tokens=DNA_CFG.get("max_visible_tokens", 512) + 300,
+        prefer_local=engine.local.available and not engine.remote_ready,
     )
     answer, think_content = strip_think_tags(raw_answer)
 
-    # ── Шаг 4: Stateless drop (сохранение в БД) ──
     brain.add_message(request.session_id, "user", gate.cleaned_text)
     brain.add_message(
-        request.session_id, "assistant", answer,
+        request.session_id,
+        "assistant", answer,
         metadata={"model": CHAT_MODEL, "language": language},
     )
 
-    # ── Шаг 5: Фоновое мягкое обучение ──
     improved = False
     score = None
     critique = None
 
-    if ENABLE_SOFT_LEARNING and request.self_improve:
+    if ENABLE_SOFT_LEARNING and request.self_improve and _helper_model_ready(TEACHER_MODEL):
         try:
             evaluation = await evaluate_answer(
                 engine,
@@ -267,8 +388,9 @@ async def chat(request: ChatRequest) -> ChatResponse:
         except Exception as exc:
             log.warning("Soft learning failed: %s", exc)
 
-    # ── Шаг 4 continued: Очистка памяти ──
-    gc.collect()
+    _request_count += 1
+    if _request_count % 50 == 0:
+        gc.collect()
 
     return ChatResponse(
         answer=answer,
@@ -321,8 +443,6 @@ async def vision(request: VisionRequest) -> ChatResponse:
         brain.add_message(request.session_id, "user", f"[vision] {request.question}", {"has_image": True})
         brain.add_message(request.session_id, "assistant", answer, {"model": VISION_MODEL})
 
-        gc.collect()
-
         return ChatResponse(
             answer=answer,
             session_id=request.session_id,
@@ -341,12 +461,39 @@ async def feedback(request: FeedbackRequest) -> FeedbackResponse:
     return FeedbackResponse(ok=True)
 
 
+@app.post("/knowledge/add", response_model=KnowledgeAddResponse)
+async def add_knowledge(request: KnowledgeAddRequest) -> KnowledgeAddResponse:
+    chunks = brain.upsert_document(
+        source=request.source,
+        title=request.title,
+        content=request.content,
+    )
+    return KnowledgeAddResponse(ok=True, chunks=chunks)
+
+
+@app.post("/knowledge/ingest", response_model=KnowledgeIngestResponse)
+async def ingest_knowledge(request: KnowledgeIngestRequest) -> KnowledgeIngestResponse:
+    directory = Path(request.directory)
+    if not directory.exists() or not directory.is_dir():
+        raise HTTPException(status_code=400, detail=f"Knowledge directory not found: {request.directory}")
+    chunks = brain.ingest_directory(str(directory))
+    return KnowledgeIngestResponse(ok=True, directory=str(directory), chunks=chunks)
+
+
+@app.get("/knowledge/search", response_model=KnowledgeSearchResponse)
+async def search_knowledge(q: str, limit: int = 6) -> KnowledgeSearchResponse:
+    clean_limit = max(1, min(limit, 20))
+    return KnowledgeSearchResponse(results=brain.search_knowledge(q, limit=clean_limit))
+
+
 # ── Helpers ────────────────────────────────────────────────────────────
 
+def _helper_model_ready(model: str) -> bool:
+    return bool(PROVIDER_CFG.get("base_url") and model)
+
+
 async def _model_filter(text: str) -> dict | None:
-    """Use the filter model to classify the request."""
     import json
-    from core.prompts import FILTER_SYSTEM_PROMPT
 
     try:
         raw = await engine.chat(
@@ -368,19 +515,20 @@ async def _model_filter(text: str) -> dict | None:
 
 
 def process_evaluation_from_filter(filter_data: dict) -> list[dict[str, str]]:
-    """Extract reflected rules from filter output."""
     from soft_learning.rule_extractor import categorize_rule
 
     entries = []
     note = filter_data.get("memory_note", "")
     if note:
-        import re
-        rules = re.findall(r"\[REFLECTED_RULE:\s*([^\]]+)\]", note)
+        rules = _REFLECTED_RULE_RE.findall(note)
         for rule in rules:
             entries.append({"rule": rule, "category": categorize_rule(rule), "source": "filter"})
         if not rules and note.strip():
             entries.append({"rule": note.strip(), "category": categorize_rule(note), "source": "filter"})
     return entries
+
+
+_REFLECTED_RULE_RE = __import__("re").compile(r"\[REFLECTED_RULE:\s*([^\]]+)\]")
 
 
 def _messages_to_text(messages: list[dict[str, Any]]) -> str:

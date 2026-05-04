@@ -1,8 +1,8 @@
-# ⚡ Napi Core Configuration
-# 2 CPU / 2 GB RAM / ~100 GB SSD
+# Napi Core Configuration
+# Optimized for: 2 CPU / 2 GB RAM / ~100 GB SSD
 # Scale values up when upgrading hardware.
 
-# === ДНК-лимиты ===
+# === DNA-limits ===
 dna:
   max_message_length: 4000
   max_visible_tokens: 512
@@ -12,9 +12,9 @@ dna:
     - pl
   vision_enabled: false
 
-# === Движок инференса ===
+# === Inference Engine ===
 engine:
-  # Локальная GGUF модель (llama-cpp-python)
+  # Local GGUF model (llama-cpp-python)
   local:
     enabled: false
     model_path: "./models/napi-2b-q4_k_m.gguf"
@@ -24,32 +24,30 @@ engine:
     max_tokens: 512
     temperature: 0.55
 
-  # Любой OpenAI-совместимый провайдер
+  # Any OpenAI-compatible provider
   # LM Studio:        base_url: "http://localhost:1234/v1"
   # Ollama:           base_url: "http://localhost:11434/v1"
   # vLLM:             base_url: "http://localhost:8000/v1"
   # Together AI:      base_url: "https://api.together.xyz/v1"
   # Groq:             base_url: "https://api.groq.com/openai/v1"
   # OpenAI:           base_url: "https://api.openai.com/v1"
-  # Любой другой:     base_url: "https://your-server/v1"
   provider:
     enabled: true
-    api_key_env: "NAPI_API_KEY"             # Имя переменной окружения с API-ключом
-    api_key: ""                               # Или впиши ключ сюда (НЕ коммить в git!)
-    base_url: ""                              # ОБЯЗАТЕЛЬНО: URL провайдера, напр. https://openrouter.ai/api/v1
-    chat_model: ""                            # ОБЯЗАТЕЛЬНО: модель для чата, напр. openai/gpt-oss-20b:free
-    teacher_model: ""                         # ОБЯЗАТЕЛЬНО: модель для оценки ответов
-    filter_model: ""                          # ОБЯЗАТЕЛЬНО: модель для фильтрации
-    reasoning_model: ""                       # ОБЯЗАТЕЛЬНО: модель для рассуждений
-    vision_model: ""                          # модель для зрения (если провайдер поддерживает)
+    api_key_env: "NAPI_API_KEY"
+    api_key: ""
+    base_url: ""
+    chat_model: ""
+    teacher_model: ""
+    filter_model: ""
+    reasoning_model: ""
+    vision_model: ""
     timeout_seconds: 90
     max_concurrent: 2
-    # Заголовки для специфичных провайдеров (опционально)
     extra_headers:
       HTTP-Referer: "http://localhost:8000"
       X-Title: "Napi AI"
 
-# === Gatekeeper (префильтрация без нейросети) ===
+# === Gatekeeper (prefilter without neural network) ===
 gatekeeper:
   max_input_length: 4000
   blocked_patterns:
@@ -57,7 +55,7 @@ gatekeeper:
     - "(?i)(violence|abuse|doxxing)"
   max_vision_question_length: 2000
 
-# === База данных ===
+# === Database ===
 storage:
   database_path: "./storage/napi_brain.db"
   max_history_messages: 24
@@ -66,7 +64,7 @@ storage:
   max_reflected_rules: 8
   note_max_length: 1000
 
-# === Soft Learning (Учитель) ===
+# === Soft Learning (Teacher) ===
 soft_learning:
   enabled: true
   min_score_for_revision: 8
@@ -78,15 +76,17 @@ soft_learning:
     revision: 0.4
     vision: 0.35
 
-# === Рассуждения ===
+# === Reasoning ===
 reasoning:
   enabled: true
   max_context_chars: 12000
   max_tokens: 450
 
-# === Сервер ===
+# === Server ===
 server:
   host: "0.0.0.0"
   port: 8000
   workers: 1
   app_name: "Napi"
+  # Resource limits for 2-core / 2-GB
+  gc_interval_requests: 50
