@@ -2,6 +2,8 @@
 
 Локальная ИИ-система со **Stateless Architecture** — спроектирована для 2 CPU / 2 GB RAM / ~100 GB SSD с возможностью масштабирования.
 
+Работает с **любым OpenAI-совместимым провайдером**: LM Studio, Ollama, vLLM, Together AI, Groq, OpenAI и другими.
+
 ---
 
 ## 📂 Структура проекта
@@ -22,7 +24,7 @@ napi_ai/
 │
 ├── soft_learning/              # 🎓 Модуль асинхронного "мягкого обучения"
 │   ├── __init__.py
-│   ├── teacher_api.py          # API-клиент Учителя (любой OpenAI-совместимый провайдер)
+│   ├── teacher_api.py          # API-клиент Учителя (любой провайдер)
 │   └── rule_extractor.py       # Парсер критики Учителя в короткие правила
 │
 ├── models/                     # 📦 Директория для весов
@@ -30,7 +32,7 @@ napi_ai/
 │
 ├── config.yaml                 # ⚙️ Конфигурация (лимиты, языки, настройки Учителя)
 ├── main.py                     # 🚀 Точка входа в систему
-└── requirements.txt            # 📚 Зависимости (llama-cpp-python, pyyaml, sqlite3)
+└── requirements.txt            # 📚 Зависимости
 ```
 
 ---
@@ -54,7 +56,7 @@ napi_ai/
 ### Шаг 3: Размышление и Генерация (Inference)
 `core/engine.py` передаёт промпт в движок:
 - Локальная GGUF-модель (если включена в `config.yaml`)
-- OpenRouter (фоллбек или основной провайдер)
+- Удалённый провайдер через OpenAI-совместимый API
 - Napi сначала генерирует невидимый блок `<THINK>...</THINK>`
 - Затем генерируется финальный текстовый ответ
 - Если генерация достигает `max_visible_tokens` (512 по умолчанию) — процесс принудительно останавливается
@@ -82,9 +84,41 @@ napi_ai/
 | Нулевой контекст | Нет массива прошлых сообщений (`history = []`) |
 | mmap | `napi_brain.db` читается с SSD, данные загружаются фрагментами |
 | Ограничение токенов | Жёсткие `max_tokens` на инференс |
-| Semaphore | Максимум 2 параллельных запроса к OpenRouter |
+| Semaphore | Максимум 2 параллельных запроса к провайдеру |
 | Gatekeeper | Префильтрация без вызова модели |
 | `gc.collect()` | Очистка после каждого ответа |
+
+---
+
+## 🔌 Поддерживаемые провайдеры
+
+Napi работает с **любым OpenAI-совместимым API**. В `config.yaml` в секции `engine.provider` укажи `base_url` и модели:
+
+| Провайдер | base_url | Примечание |
+|-----------|----------|------------|
+| **LM Studio** | `http://localhost:1234/v1` | Локальный сервер на твоём ПК |
+| **Ollama** | `http://localhost:11434/v1` | Локальный инференс |
+| **vLLM** | `http://localhost:8000/v1` | Быстрый локальный сервер |
+| **Together AI** | `https://api.together.xyz/v1` | Облачный инференс |
+| **Groq** | `https://api.groq.com/openai/v1` | Быстрый облачный инференс |
+| **OpenAI** | `https://api.openai.com/v1` | Оригинальный OpenAI API |
+| **Любой другой** | `https://your-server/v1` | Любой сервер с `/chat/completions` |
+
+API-ключ задаётся через переменную окружения (по умолчанию `NAPI_API_KEY`) или прямо в `config.yaml`:
+
+```yaml
+engine:
+  provider:
+    api_key_env: "NAPI_API_KEY"
+    base_url: "http://localhost:1234/v1"
+    chat_model: "my-local-model"         # ОБЯЗАТЕЛЬНО
+    teacher_model: "my-local-model"       # ОБЯЗАТЕЛЬНО
+    filter_model: "my-local-model"        # ОБЯЗАТЕЛЬНО
+    reasoning_model: "my-local-model"     # ОБЯЗАТЕЛЬНО
+    vision_model: "my-vision-model"       # если провайдер поддерживает зрение
+```
+
+Локальный GGUF и удалённый провайдер могут работать **одновременно**: GGUF как основной, провайдер как фоллбек.
 
 ---
 
@@ -107,44 +141,18 @@ llama-cpp-python
 
 ---
 
-## 🔌 Поддерживаемые провайдеры
-
-Napi работает с **любым OpenAI-совместимым API**. В `config.yaml` в секции `engine.provider` укажи `base_url`:
-
-| Провайдер | base_url | Примечание |
-|-----------|----------|------------|
-| **OpenRouter** | `https://openrouter.ai/api/v1` | Бесплатные open-weight модели |
-| **LM Studio** | `http://localhost:1234/v1` | Локальный сервер на твоём ПК |
-| **Ollama** | `http://localhost:11434/v1` | Локальный инференс Ollama |
-| **vLLM** | `http://localhost:8000/v1` | Быстрый локальный сервер |
-| **Together AI** | `https://api.together.xyz/v1` | Облачный инференс |
-| **Groq** | `https://api.groq.com/openai/v1` | Быстрый облачный инференс |
-| **OpenAI** | `https://api.openai.com/v1` | Оригинальный OpenAI API |
-| **Любой другой** | `https://your-server/v1` | Любой сервер с `/chat/completions` |
-
-API-ключ задаётся через переменную окружения (по умолчанию `OPENAI_API_KEY`) или прямо в `config.yaml`:
-
-```yaml
-engine:
-  provider:
-    api_key_env: "OPENAI_API_KEY"  # Имя переменной окружения
-    base_url: "http://localhost:1234/v1"  # LM Studio, например
-    chat_model: "local-model"  # Имя модели у провайдера
-```
-
-Локальный GGUF и удалённый провайдер могут работать **одновременно**: GGUF как основной, провайдер как фоллбек.
-
----
-
 ## 🚀 Запуск
 
 ```powershell
 # 1. Установить зависимости
 pip install -r requirements.txt
 
-# 2. Настроить config.yaml (API-ключ OpenRouter)
+# 2. Настроить config.yaml (base_url, модели, API-ключ)
 
-# 3. Запустить сервер
+# 3. Задать API-ключ (если нужен)
+$env:NAPI_API_KEY = "твой-ключ"
+
+# 4. Запустить сервер
 python main.py
 ```
 
@@ -163,12 +171,11 @@ uvicorn main:app --host 0.0.0.0 --port 8000 --workers 1
 |--------|----------------|
 | `dna` | Лимиты: 4000 символов, 512 токенов, языки RU/EN/PL |
 | `engine.local` | GGUF модель: путь, n_ctx, n_threads |
-| `engine.provider` | **Любой OpenAI-совместимый API**: OpenRouter, LM Studio, Ollama, vLLM, и т.д. |
+| `engine.provider` | **Провайдер**: base_url, модели (ОБЯЗАТЕЛЬНО), таймаут, конкурентность |
 | `gatekeeper` | Префильтрация: длина, блокирующие паттерны |
 | `storage` | Путь к БД, лимиты истории, заметок, чанков |
 | `soft_learning` | Учитель: порог оценки, температуры |
 | `reasoning` | THINK-блок: включение, max_context, max_tokens |
-| `model_policy` | Политика открытых весов |
 | `server` | Хост, порт, воркеры |
 
 ---
@@ -220,9 +227,9 @@ uvicorn main:app --host 0.0.0.0 --port 8000 --workers 1
 
 | Профиль | Конкурентность | История | Чанки | Модель |
 |---------|---------------|---------|-------|--------|
-| 2 CPU / 2 GB | 2 | 24 | 6 | GGUF 2B или OpenRouter |
-| 4 CPU / 4 GB | 4 | 40 | 8 | GGUF 2B + OpenRouter |
-| 8 CPU / 8 GB | 8 | 60 | 10 | GGUF 7B + OpenRouter |
-| 16+ CPU / 16+ GB | 16 | 100 | 12 | GGUF 13B + OpenRouter |
+| 2 CPU / 2 GB | 2 | 24 | 6 | GGUF 2B или провайдер |
+| 4 CPU / 4 GB | 4 | 40 | 8 | GGUF 2B + провайдер |
+| 8 CPU / 8 GB | 8 | 60 | 10 | GGUF 7B + провайдер |
+| 16+ CPU / 16+ GB | 16 | 100 | 12 | GGUF 13B + провайдер |
 
 Все лимиты меняются в `config.yaml` — **без изменения кода**.

@@ -25,7 +25,6 @@ engine:
     temperature: 0.55
 
   # Любой OpenAI-совместимый провайдер
-  # OpenRouter:       base_url: "https://openrouter.ai/api/v1"
   # LM Studio:        base_url: "http://localhost:1234/v1"
   # Ollama:           base_url: "http://localhost:11434/v1"
   # vLLM:             base_url: "http://localhost:8000/v1"
@@ -35,13 +34,13 @@ engine:
   # Любой другой:     base_url: "https://your-server/v1"
   provider:
     enabled: true
-    api_key_env: "OPENAI_API_KEY"        # Имя переменной окружения с API-ключом
-    base_url: "https://openrouter.ai/api/v1"
-    chat_model: "openai/gpt-oss-20b:free"
-    teacher_model: "openai/gpt-oss-20b:free"
-    filter_model: "openai/gpt-oss-20b:free"
-    reasoning_model: "openai/gpt-oss-20b:free"
-    vision_model: "nvidia/nemotron-nano-12b-v2-vl:free"
+    api_key_env: "NAPI_API_KEY"            # Имя переменной окружения с API-ключом
+    base_url: "http://localhost:1234/v1"    # URL провайдера (ОБЯЗАТЕЛЬНО указать свой)
+    chat_model: ""                          # ОБЯЗАТЕЛЬНО: модель для чата
+    teacher_model: ""                       # ОБЯЗАТЕЛЬНО: модель для оценки ответов
+    filter_model: ""                        # ОБЯЗАТЕЛЬНО: модель для фильтрации
+    reasoning_model: ""                     # ОБЯЗАТЕЛЬНО: модель для рассуждений
+    vision_model: ""                        # ОБЯЗАТЕЛЬНО: модель для зрения (если есть)
     timeout_seconds: 90
     max_concurrent: 2
     # Заголовки для специфичных провайдеров (опционально)
