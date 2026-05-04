@@ -15,7 +15,12 @@ models/*.bin
 venv/
 
 napi_brain.db
+napi_brain.db-shm
+napi_brain.db-wal
 data/
+
+train_*.py
+check_brain.py
 
 *.log
 

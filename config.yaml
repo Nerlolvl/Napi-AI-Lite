@@ -34,13 +34,14 @@ engine:
   # Любой другой:     base_url: "https://your-server/v1"
   provider:
     enabled: true
-    api_key_env: "NAPI_API_KEY"            # Имя переменной окружения с API-ключом
-    base_url: "http://localhost:1234/v1"    # URL провайдера (ОБЯЗАТЕЛЬНО указать свой)
-    chat_model: ""                          # ОБЯЗАТЕЛЬНО: модель для чата
-    teacher_model: ""                       # ОБЯЗАТЕЛЬНО: модель для оценки ответов
-    filter_model: ""                        # ОБЯЗАТЕЛЬНО: модель для фильтрации
-    reasoning_model: ""                     # ОБЯЗАТЕЛЬНО: модель для рассуждений
-    vision_model: ""                        # ОБЯЗАТЕЛЬНО: модель для зрения (если есть)
+    api_key_env: "NAPI_API_KEY"             # Имя переменной окружения с API-ключом
+    api_key: ""                               # Или впиши ключ сюда (НЕ коммить в git!)
+    base_url: ""                              # ОБЯЗАТЕЛЬНО: URL провайдера, напр. https://openrouter.ai/api/v1
+    chat_model: ""                            # ОБЯЗАТЕЛЬНО: модель для чата, напр. openai/gpt-oss-20b:free
+    teacher_model: ""                         # ОБЯЗАТЕЛЬНО: модель для оценки ответов
+    filter_model: ""                          # ОБЯЗАТЕЛЬНО: модель для фильтрации
+    reasoning_model: ""                       # ОБЯЗАТЕЛЬНО: модель для рассуждений
+    vision_model: ""                          # модель для зрения (если провайдер поддерживает)
     timeout_seconds: 90
     max_concurrent: 2
     # Заголовки для специфичных провайдеров (опционально)
