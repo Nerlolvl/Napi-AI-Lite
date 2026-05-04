@@ -59,12 +59,12 @@ MAX_CHUNKS = STORAGE_CFG.get("max_knowledge_chunks", 6)
 MAX_RULES = STORAGE_CFG.get("max_reflected_rules", 8)
 NOTE_MAX_LENGTH = STORAGE_CFG.get("note_max_length", 1000)
 
-OPENROUTER_CFG = CONFIG.get("engine", {}).get("openrouter", {})
-CHAT_MODEL = OPENROUTER_CFG.get("chat_model", "openai/gpt-oss-20b:free")
-TEACHER_MODEL = OPENROUTER_CFG.get("teacher_model", "openai/gpt-oss-20b:free")
-FILTER_MODEL = OPENROUTER_CFG.get("filter_model", "openai/gpt-oss-20b:free")
-REASONING_MODEL = OPENROUTER_CFG.get("reasoning_model", "openai/gpt-oss-20b:free")
-VISION_MODEL = OPENROUTER_CFG.get("vision_model", "nvidia/nemotron-nano-12b-v2-vl:free")
+PROVIDER_CFG = CONFIG.get("engine", {}).get("provider", {})
+CHAT_MODEL = PROVIDER_CFG.get("chat_model", "openai/gpt-oss-20b:free")
+TEACHER_MODEL = PROVIDER_CFG.get("teacher_model", "openai/gpt-oss-20b:free")
+FILTER_MODEL = PROVIDER_CFG.get("filter_model", "openai/gpt-oss-20b:free")
+REASONING_MODEL = PROVIDER_CFG.get("reasoning_model", "openai/gpt-oss-20b:free")
+VISION_MODEL = PROVIDER_CFG.get("vision_model", "nvidia/nemotron-nano-12b-v2-vl:free")
 
 TEMPS = SOFT_CFG.get("temperatures", {})
 
@@ -182,7 +182,7 @@ async def chat(request: ChatRequest) -> ChatResponse:
     )
 
     # ── Шаг 2a: Фильтрация через модель (опционально) ──
-    if OPENROUTER_CFG.get("enabled", True):
+    if PROVIDER_CFG.get("enabled", True):
         try:
             filter_result = await _model_filter(gate.cleaned_text)
             if filter_result and filter_result.get("memory_note"):

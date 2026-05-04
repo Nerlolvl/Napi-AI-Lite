@@ -24,10 +24,18 @@ engine:
     max_tokens: 512
     temperature: 0.55
 
-  # OpenRouter — фоллбек и/или основной провайдер
-  openrouter:
+  # Любой OpenAI-совместимый провайдер
+  # OpenRouter:       base_url: "https://openrouter.ai/api/v1"
+  # LM Studio:        base_url: "http://localhost:1234/v1"
+  # Ollama:           base_url: "http://localhost:11434/v1"
+  # vLLM:             base_url: "http://localhost:8000/v1"
+  # Together AI:      base_url: "https://api.together.xyz/v1"
+  # Groq:             base_url: "https://api.groq.com/openai/v1"
+  # OpenAI:           base_url: "https://api.openai.com/v1"
+  # Любой другой:     base_url: "https://your-server/v1"
+  provider:
     enabled: true
-    api_key: ""  # Переопределяется через OPENROUTER_API_KEY в .env
+    api_key_env: "OPENAI_API_KEY"        # Имя переменной окружения с API-ключом
     base_url: "https://openrouter.ai/api/v1"
     chat_model: "openai/gpt-oss-20b:free"
     teacher_model: "openai/gpt-oss-20b:free"
@@ -36,6 +44,10 @@ engine:
     vision_model: "nvidia/nemotron-nano-12b-v2-vl:free"
     timeout_seconds: 90
     max_concurrent: 2
+    # Заголовки для специфичных провайдеров (опционально)
+    extra_headers:
+      HTTP-Referer: "http://localhost:8000"
+      X-Title: "Napi AI"
 
 # === Gatekeeper (префильтрация без нейросети) ===
 gatekeeper:
@@ -57,7 +69,6 @@ storage:
 # === Soft Learning (Учитель) ===
 soft_learning:
   enabled: true
-  teacher_provider: "openrouter"  # "openrouter" или "none"
   min_score_for_revision: 8
   temperatures:
     chat: 0.55
@@ -72,14 +83,6 @@ reasoning:
   enabled: true
   max_context_chars: 12000
   max_tokens: 450
-
-# === Модели: политика открытых весов ===
-model_policy:
-  require_open_weights: true
-  allowlist:
-    - "openai/gpt-oss-20b:free"
-    - "openai/gpt-oss-120b:free"
-    - "nvidia/nemotron-nano-12b-v2-vl:free"
 
 # === Сервер ===
 server:

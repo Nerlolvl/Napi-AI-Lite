@@ -11,7 +11,7 @@ napi_ai/
 │
 ├── core/                       # 🧠 Локальное вычислительное ядро
 │   ├── __init__.py
-│   ├── engine.py               # Инициализация GGUF-модели через llama-cpp-python
+│   ├── engine.py               # Инициализация GGUF + любой OpenAI-совместимый провайдер
 │   ├── gatekeeper.py           # Префильтр (защита от переполнения памяти)
 │   └── prompt_builder.py       # Сборка финального промпта (ДНК + Теги + Запрос)
 │
@@ -22,7 +22,7 @@ napi_ai/
 │
 ├── soft_learning/              # 🎓 Модуль асинхронного "мягкого обучения"
 │   ├── __init__.py
-│   ├── teacher_api.py          # API-клиент (Claude/OpenAI) для проверки ответов Napi
+│   ├── teacher_api.py          # API-клиент Учителя (любой OpenAI-совместимый провайдер)
 │   └── rule_extractor.py       # Парсер критики Учителя в короткие правила
 │
 ├── models/                     # 📦 Директория для весов
@@ -107,6 +107,35 @@ llama-cpp-python
 
 ---
 
+## 🔌 Поддерживаемые провайдеры
+
+Napi работает с **любым OpenAI-совместимым API**. В `config.yaml` в секции `engine.provider` укажи `base_url`:
+
+| Провайдер | base_url | Примечание |
+|-----------|----------|------------|
+| **OpenRouter** | `https://openrouter.ai/api/v1` | Бесплатные open-weight модели |
+| **LM Studio** | `http://localhost:1234/v1` | Локальный сервер на твоём ПК |
+| **Ollama** | `http://localhost:11434/v1` | Локальный инференс Ollama |
+| **vLLM** | `http://localhost:8000/v1` | Быстрый локальный сервер |
+| **Together AI** | `https://api.together.xyz/v1` | Облачный инференс |
+| **Groq** | `https://api.groq.com/openai/v1` | Быстрый облачный инференс |
+| **OpenAI** | `https://api.openai.com/v1` | Оригинальный OpenAI API |
+| **Любой другой** | `https://your-server/v1` | Любой сервер с `/chat/completions` |
+
+API-ключ задаётся через переменную окружения (по умолчанию `OPENAI_API_KEY`) или прямо в `config.yaml`:
+
+```yaml
+engine:
+  provider:
+    api_key_env: "OPENAI_API_KEY"  # Имя переменной окружения
+    base_url: "http://localhost:1234/v1"  # LM Studio, например
+    chat_model: "local-model"  # Имя модели у провайдера
+```
+
+Локальный GGUF и удалённый провайдер могут работать **одновременно**: GGUF как основной, провайдер как фоллбек.
+
+---
+
 ## 🚀 Запуск
 
 ```powershell
@@ -134,7 +163,7 @@ uvicorn main:app --host 0.0.0.0 --port 8000 --workers 1
 |--------|----------------|
 | `dna` | Лимиты: 4000 символов, 512 токенов, языки RU/EN/PL |
 | `engine.local` | GGUF модель: путь, n_ctx, n_threads |
-| `engine.openrouter` | API-ключ, модели, таймаут, конкурентность |
+| `engine.provider` | **Любой OpenAI-совместимый API**: OpenRouter, LM Studio, Ollama, vLLM, и т.д. |
 | `gatekeeper` | Префильтрация: длина, блокирующие паттерны |
 | `storage` | Путь к БД, лимиты истории, заметок, чанков |
 | `soft_learning` | Учитель: порог оценки, температуры |
