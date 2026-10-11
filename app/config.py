@@ -19,6 +19,7 @@ MAX_VISIBLE_TOKENS = DNA_CFG.get("max_visible_tokens", 512)
 
 ENABLE_SOFT_LEARNING = SOFT_CFG.get("enabled", True)
 MIN_SCORE_REVISION = SOFT_CFG.get("min_score_for_revision", 8)
+REINFORCE_BONUS = SOFT_CFG.get("reinforce_bonus", 0.1)
 TEMPS = SOFT_CFG.get("temperatures", {})
 
 ENABLE_REASONING = REASONING_CFG.get("enabled", True)

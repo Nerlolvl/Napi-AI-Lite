@@ -36,14 +36,18 @@ async def evaluate_answer(
     model: str | None = None,
     temperature: float = 0.1,
     max_tokens: int = 500,
+    evaluation_context: str | None = None,
 ) -> Evaluation:
+    user_content = f"User message:\n{user_message}\n\nAssistant answer:\n{answer}"
+    if evaluation_context:
+        user_content += (
+            f"\n\nEvaluation context (knowledge Napi used and rules it applied):\n"
+            f"{evaluation_context}"
+        )
     raw = await engine.chat(
         messages=[
             {"role": "system", "content": TEACHER_SYSTEM_PROMPT},
-            {
-                "role": "user",
-                "content": f"User message:\n{user_message}\n\nAssistant answer:\n{answer}",
-            },
+            {"role": "user", "content": user_content},
         ],
         model=model,
         temperature=temperature,
@@ -79,19 +83,23 @@ async def revise_answer(
     model: str | None = None,
     temperature: float = 0.4,
     max_tokens: int = 1400,
+    revision_context: str | None = None,
 ) -> str:
+    user_content = (
+        f"User message:\n{user_message}\n\n"
+        f"Original answer:\n{original_answer}\n\n"
+        f"Teacher critique:\n{evaluation.critique}\n\n"
+        f"Revision instructions:\n{evaluation.revision_instructions}"
+    )
+    if revision_context:
+        user_content += (
+            f"\n\nRevision context (stay consistent with this knowledge and rules):\n"
+            f"{revision_context}"
+        )
     return await engine.chat(
         messages=[
             {"role": "system", "content": REVISION_SYSTEM_PROMPT},
-            {
-                "role": "user",
-                "content": (
-                    f"User message:\n{user_message}\n\n"
-                    f"Original answer:\n{original_answer}\n\n"
-                    f"Teacher critique:\n{evaluation.critique}\n\n"
-                    f"Revision instructions:\n{evaluation.revision_instructions}"
-                ),
-            },
+            {"role": "user", "content": user_content},
         ],
         model=model,
         temperature=temperature,

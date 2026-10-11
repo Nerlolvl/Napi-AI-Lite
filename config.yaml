@@ -73,6 +73,8 @@ storage:
 soft_learning:
   enabled: true
   min_score_for_revision: 8
+  # Score bonus for rules that shaped an answer rated >= min_score_for_revision.
+  reinforce_bonus: 0.1
   temperatures:
     chat: 0.55
     reasoning: 0.25

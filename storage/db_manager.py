@@ -299,6 +299,27 @@ class NapiBrain:
                 conn.commit()
         return [row["rule"] for row in rows]
 
+    def reinforce_rules(self, rules: list[str], bonus: float = 0.1) -> int:
+        """Reinforce rules that contributed to a good answer.
+
+        Bumps score for rules matching the given texts (case-insensitive).
+        Unknown texts are ignored — rules may also come from session notes
+        and not exist in the diary. Returns the number of updated rows.
+        """
+        normalized = [rule.strip().lower() for rule in rules if rule.strip()]
+        if not normalized or bonus <= 0:
+            return 0
+        with self._lock:
+            conn = self._get_conn()
+            marks = ",".join("?" * len(normalized))
+            cursor = conn.execute(
+                f"UPDATE reflection_diary SET score = MIN(score + ?, 3.0) "
+                f"WHERE normalized IN ({marks})",
+                (bonus, *normalized),
+            )
+            conn.commit()
+            return cursor.rowcount
+
     def prune_rules(self) -> int:
         """Remove TTL-expired and excess rules; return how many were removed."""
         now = time()

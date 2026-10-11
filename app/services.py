@@ -8,7 +8,7 @@ import re
 from typing import Any
 
 from core.prompt_builder import FILTER_SYSTEM_PROMPT
-from soft_learning.rule_extractor import categorize_rule
+from soft_learning.rule_extractor import categorize_rule, is_usable_rule
 
 from app.config import FILTER_MODEL, PROVIDER_CFG, TEMPS
 from app.state import engine
@@ -45,16 +45,33 @@ async def model_filter(text: str) -> dict | None:
 
 
 def rules_from_filter(filter_data: dict) -> list[dict[str, str]]:
-    """Extract reflected rules from a filter memory_note."""
+    """Extract quality-checked reflected rules from a filter memory_note."""
     entries = []
     note = filter_data.get("memory_note", "")
     if note:
-        rules = _REFLECTED_RULE_RE.findall(note)
+        rules = [r for r in _REFLECTED_RULE_RE.findall(note) if is_usable_rule(r)]
         for rule in rules:
             entries.append({"rule": rule, "category": categorize_rule(rule), "source": "filter"})
-        if not rules and note.strip():
+        if not rules and is_usable_rule(note):
             entries.append({"rule": note.strip(), "category": categorize_rule(note), "source": "filter"})
     return entries
+
+
+def build_learning_context(
+    knowledge_chunks: list[dict[str, str]],
+    reflected_rules: list[str],
+) -> str | None:
+    """Compact knowledge + rules text for grounded evaluation and revision."""
+    parts = []
+    if knowledge_chunks:
+        kb = "\n".join(
+            f"- {chunk['title']}: {chunk['content'][:200]}" for chunk in knowledge_chunks
+        )
+        parts.append(f"Knowledge base excerpts used:\n{kb}")
+    if reflected_rules:
+        rules = "\n".join(f"- {rule}" for rule in reflected_rules)
+        parts.append(f"Reflected rules applied:\n{rules}")
+    return "\n\n".join(parts) or None
 
 
 def messages_to_text(messages: list[dict[str, Any]]) -> str:

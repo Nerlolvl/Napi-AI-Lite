@@ -31,6 +31,7 @@ from app.config import (
     REASONING_MAX_CONTEXT,
     REASONING_MAX_TOKENS,
     REASONING_MODEL,
+    REINFORCE_BONUS,
     TEACHER_MODEL,
     TEMPS,
     VISION_MODEL,
@@ -42,7 +43,13 @@ from app.schemas import (
     FeedbackResponse,
     VisionRequest,
 )
-from app.services import helper_model_ready, messages_to_text, model_filter, rules_from_filter
+from app.services import (
+    build_learning_context,
+    helper_model_ready,
+    messages_to_text,
+    model_filter,
+    rules_from_filter,
+)
 from app.state import brain, count_request, engine, neural_brain
 
 log = logging.getLogger("napi")
@@ -102,16 +109,24 @@ async def chat(request: ChatRequest) -> ChatResponse:
     )
     answer, think_content = strip_think_tags(raw_answer)
 
+    learning_context = build_learning_context(knowledge_chunks, reflected_rules)
+
     brain.add_message(request.session_id, "user", gate.cleaned_text)
+
+    answer, think_content, improved, score, critique = await _maybe_self_improve(
+        request, gate.cleaned_text, answer, think_content, learning_context, reflected_rules
+    )
+
     brain.add_message(
         request.session_id,
         "assistant",
         answer,
-        metadata={"model": CHAT_MODEL, "language": language},
-    )
-
-    answer, think_content, improved, score, critique = await _maybe_self_improve(
-        request, gate.cleaned_text, answer, think_content
+        metadata={
+            "model": CHAT_MODEL,
+            "language": language,
+            "score": score,
+            "improved": improved,
+        },
     )
 
     count_request()
@@ -259,6 +274,8 @@ async def _maybe_self_improve(
     cleaned_text: str,
     answer: str,
     think_content: str | None,
+    learning_context: str | None,
+    applied_rules: list[str],
 ) -> tuple[str, str | None, bool, float | None, str | None]:
     if not (ENABLE_SOFT_LEARNING and request.self_improve and helper_model_ready(TEACHER_MODEL)):
         return answer, think_content, False, None, None
@@ -269,6 +286,7 @@ async def _maybe_self_improve(
             user_message=cleaned_text,
             answer=answer,
             model=TEACHER_MODEL,
+            evaluation_context=learning_context,
         )
         if evaluation.memory_note:
             brain.add_note(request.session_id, evaluation.memory_note)
@@ -282,11 +300,17 @@ async def _maybe_self_improve(
                 original_answer=answer,
                 evaluation=evaluation,
                 model=CHAT_MODEL,
+                revision_context=learning_context,
             )
             answer, revised_think = strip_think_tags(revised)
             if revised_think:
                 think_content = revised_think
             return answer, think_content, True, evaluation.score, evaluation.critique
+
+        if evaluation.score >= MIN_SCORE_REVISION:
+            reinforced = brain.reinforce_rules(applied_rules, REINFORCE_BONUS)
+            if reinforced:
+                log.debug("Reinforced %d rules after good answer (score=%.1f)", reinforced, evaluation.score)
 
         return answer, think_content, False, evaluation.score, evaluation.critique
     except Exception as exc:

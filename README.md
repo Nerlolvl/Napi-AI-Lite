@@ -96,14 +96,15 @@ As soon as the answer is delivered to the user:
 
 ### Step 5: Background Soft Learning
 If the Teacher is active in `config.yaml`:
-- The `[Question + Napi Answer]` pair is sent to the Teacher
-- `soft_learning/rule_extractor.py` parses the critique and creates a `[REFLECTED_RULE: ...]`
-- The rule is saved to the `reflection_diary` table (SQLite) — duplicates reinforce the score instead of accumulating
-- On a similar question next time, Napi will read this rule at **Step 2**
+- The Teacher evaluates the answer **with full context**: the user question, the answer, the knowledge excerpts Napi used, and the rules it applied — so critique is grounded, not blind
+- If the score is below `min_score_for_revision` (default 8), the answer is rewritten with the critique **and** the same knowledge context, keeping the revision consistent with the knowledge base
+- Lessons are stored as `[REFLECTED_RULE: ...]` in `reflection_diary` — only from the teacher's `memory_note` channel, and only after a quality gate (length bounds, no generic filler)
+- When an answer scores well, the rules that shaped it get a score bonus (`reinforce_bonus`) — rules that correlate with good answers grow stronger
 
 **Rule hygiene** keeps the diary useful over time:
 - **Dedup** — equivalent rules (case-insensitive) reinforce score (capped at 3.0) instead of duplicating
 - **Score & usage** — selection orders by score and recency; each use bumps `hits` and refreshes `last_used_at`
+- **Reinforcement** — good answers strengthen their rules; the teacher repeating a rule strengthens it too
 - **TTL** — rules unused for `rule_ttl_days` (default 30) stop appearing in prompts
 - **Hard cap** — the table never exceeds `max_rules_total` (default 200); best-scored rules survive
 
@@ -253,7 +254,7 @@ All settings live in a single file:
 | `engine.provider` | **Provider**: base_url, models (REQUIRED), timeout, concurrency |
 | `gatekeeper` | Prefiltering: length, blocking patterns |
 | `storage` | DB path, history/notes/chunks limits, rule hygiene (`rule_ttl_days`, `max_rules_total`) |
-| `soft_learning` | Teacher: score threshold, temperatures |
+| `soft_learning` | Teacher: score threshold, reinforcement bonus, temperatures |
 | `reasoning` | THINK block: enable, max_context, max_tokens |
 | `server` | Host, port, workers |
 
