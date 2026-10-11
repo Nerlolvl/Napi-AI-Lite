@@ -8,9 +8,14 @@ from core.engine import InferenceEngine
 from core.neural_brain import NeuralBrain
 from storage.db_manager import NapiBrain
 
-from app.config import DB_PATH, GC_INTERVAL, NOTE_MAX_LENGTH
+from app.config import DB_PATH, GC_INTERVAL, MAX_RULES_TOTAL, NOTE_MAX_LENGTH, RULE_TTL_DAYS
 
-brain = NapiBrain(DB_PATH, max_note_length=NOTE_MAX_LENGTH)
+brain = NapiBrain(
+    DB_PATH,
+    max_note_length=NOTE_MAX_LENGTH,
+    rule_ttl_days=RULE_TTL_DAYS,
+    max_rules_total=MAX_RULES_TOTAL,
+)
 engine = InferenceEngine()
 neural_brain = NeuralBrain()
 

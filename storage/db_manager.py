@@ -15,11 +15,19 @@ class NapiBrain:
     pragmas for 2-core / 2 GB RAM operation.
     """
 
-    def __init__(self, database_path: str, max_note_length: int = 1000) -> None:
+    def __init__(
+        self,
+        database_path: str,
+        max_note_length: int = 1000,
+        rule_ttl_days: float = 30.0,
+        max_rules_total: int = 200,
+    ) -> None:
         self.path = Path(database_path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = Lock()
         self._max_note_length = max_note_length
+        self._rule_ttl_seconds = max(0.0, rule_ttl_days) * 86400
+        self._max_rules_total = max(1, max_rules_total)
         self._conn: sqlite3.Connection | None = None
         self._init_db()
 
@@ -88,7 +96,11 @@ class NapiBrain:
                     rule TEXT NOT NULL,
                     source TEXT NOT NULL DEFAULT 'teacher',
                     category TEXT NOT NULL DEFAULT 'general',
-                    created_at REAL NOT NULL
+                    created_at REAL NOT NULL,
+                    normalized TEXT NOT NULL DEFAULT '',
+                    hits INTEGER NOT NULL DEFAULT 0,
+                    last_used_at REAL,
+                    score REAL NOT NULL DEFAULT 1.0
                 );
 
                 CREATE TABLE IF NOT EXISTS knowledge_docs (
@@ -119,7 +131,35 @@ class NapiBrain:
                     ON reflection_diary(category);
                 """
             )
+            self._migrate_rules_table(conn)
             conn.commit()
+
+    def _migrate_rules_table(self, conn: sqlite3.Connection) -> None:
+        """Bring legacy reflection_diary schemas up to the hygiene columns.
+
+        Idempotent: adds missing columns, backfills `normalized`, removes
+        duplicate rules left by the old append-only writer, and enforces
+        uniqueness so future inserts can deduplicate.
+        """
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(reflection_diary)")}
+        if "normalized" not in columns:
+            conn.execute("ALTER TABLE reflection_diary ADD COLUMN normalized TEXT NOT NULL DEFAULT ''")
+        if "hits" not in columns:
+            conn.execute("ALTER TABLE reflection_diary ADD COLUMN hits INTEGER NOT NULL DEFAULT 0")
+        if "last_used_at" not in columns:
+            conn.execute("ALTER TABLE reflection_diary ADD COLUMN last_used_at REAL")
+        if "score" not in columns:
+            conn.execute("ALTER TABLE reflection_diary ADD COLUMN score REAL NOT NULL DEFAULT 1.0")
+
+        conn.execute("UPDATE reflection_diary SET normalized = lower(trim(rule)) WHERE normalized = ''")
+        conn.execute(
+            "DELETE FROM reflection_diary WHERE id NOT IN "
+            "(SELECT MIN(id) FROM reflection_diary GROUP BY normalized)"
+        )
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_reflection_normalized "
+            "ON reflection_diary(normalized)"
+        )
 
     def add_message(
         self,
@@ -187,34 +227,113 @@ class NapiBrain:
         if comment.strip():
             self.add_note(session_id, f"User feedback: rating={rating}; {comment.strip()}")
 
-    def add_reflected_rule(self, rule: str, source: str = "teacher", category: str = "general") -> None:
+    def add_reflected_rule(self, rule: str, source: str = "teacher", category: str = "general") -> bool:
+        """Store a reflected rule, or reinforce it if an equivalent exists.
+
+        Deduplication is case-insensitive (trimmed). Reinforcing bumps the
+        score (capped) and refreshes the TTL instead of creating a duplicate.
+        Returns True when a new rule was created.
+        """
         clean_rule = rule.strip()[: self._max_note_length]
         if not clean_rule:
-            return
+            return False
+
+        now = time()
+        normalized = clean_rule.lower()
         with self._lock:
             conn = self._get_conn()
-            conn.execute(
-                "INSERT INTO reflection_diary (rule, source, category, created_at) "
-                "VALUES (?, ?, ?, ?)",
-                (clean_rule, source, category, time()),
-            )
+            existing = conn.execute(
+                "SELECT id FROM reflection_diary WHERE normalized = ?",
+                (normalized,),
+            ).fetchone()
+            if existing is None:
+                conn.execute(
+                    "INSERT INTO reflection_diary "
+                    "(rule, source, category, created_at, normalized, score) "
+                    "VALUES (?, ?, ?, ?, ?, 1.0)",
+                    (clean_rule, source, category, now, normalized),
+                )
+                created = True
+            else:
+                conn.execute(
+                    "UPDATE reflection_diary SET "
+                    "score = MIN(score + 0.25, 3.0), "
+                    "last_used_at = ? "
+                    "WHERE id = ?",
+                    (now, existing["id"]),
+                )
+                created = False
+            self._prune_rules(conn, now)
             conn.commit()
+        return created
 
     def get_reflected_rules(self, category: str | None = None, limit: int = 8) -> list[str]:
+        """Return active rules ordered by score and recency, tracking usage.
+
+        A rule is active while `last_used_at` (or `created_at` for never-used
+        rules) is inside the TTL window. Selected rules get their hit counter
+        and `last_used_at` bumped, which keeps frequently used rules alive.
+        """
+        if limit <= 0:
+            return []
+
+        now = time()
         with self._lock:
             conn = self._get_conn()
-            if category:
-                rows = conn.execute(
-                    "SELECT rule FROM reflection_diary WHERE category = ? "
-                    "ORDER BY id DESC LIMIT ?",
-                    (category, limit),
-                ).fetchall()
-            else:
-                rows = conn.execute(
-                    "SELECT rule FROM reflection_diary ORDER BY id DESC LIMIT ?",
-                    (limit,),
-                ).fetchall()
+            rows = conn.execute(
+                "SELECT id, rule FROM reflection_diary "
+                "WHERE (? IS NULL OR category = ?) "
+                "AND COALESCE(last_used_at, created_at) >= ? "
+                "ORDER BY score DESC, COALESCE(last_used_at, created_at) DESC, id DESC "
+                "LIMIT ?",
+                (category, category, now - self._rule_ttl_seconds, limit),
+            ).fetchall()
+            if rows:
+                ids = [row["id"] for row in rows]
+                marks = ",".join("?" * len(ids))
+                conn.execute(
+                    f"UPDATE reflection_diary SET hits = hits + 1, last_used_at = ? "
+                    f"WHERE id IN ({marks})",
+                    (now, *ids),
+                )
+                conn.commit()
         return [row["rule"] for row in rows]
+
+    def prune_rules(self) -> int:
+        """Remove TTL-expired and excess rules; return how many were removed."""
+        now = time()
+        with self._lock:
+            conn = self._get_conn()
+            before = conn.execute("SELECT COUNT(*) AS n FROM reflection_diary").fetchone()["n"]
+            self._prune_rules(conn, now)
+            conn.commit()
+            after = conn.execute("SELECT COUNT(*) AS n FROM reflection_diary").fetchone()["n"]
+        return before - after
+
+    def rule_stats(self) -> list[dict[str, Any]]:
+        """Return every rule with its hygiene metadata (for diagnostics)."""
+        with self._lock:
+            conn = self._get_conn()
+            rows = conn.execute(
+                "SELECT id, rule, source, category, hits, score, created_at, last_used_at "
+                "FROM reflection_diary ORDER BY id"
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def _prune_rules(self, conn: sqlite3.Connection, now: float) -> None:
+        """Delete expired rules and enforce the hard cap. Call within the lock."""
+        conn.execute(
+            "DELETE FROM reflection_diary "
+            "WHERE COALESCE(last_used_at, created_at) < ?",
+            (now - self._rule_ttl_seconds,),
+        )
+        conn.execute(
+            "DELETE FROM reflection_diary WHERE id NOT IN ("
+            "SELECT id FROM reflection_diary "
+            "ORDER BY score DESC, COALESCE(last_used_at, created_at) DESC, id DESC LIMIT ?"
+            ")",
+            (self._max_rules_total,),
+        )
 
     def upsert_document(self, source: str, title: str, content: str) -> int:
         chunks = _chunk_text(content)

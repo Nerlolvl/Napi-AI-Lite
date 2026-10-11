@@ -31,6 +31,9 @@ MAX_RULES = STORAGE_CFG.get("max_reflected_rules", 8)
 NOTE_MAX_LENGTH = STORAGE_CFG.get("note_max_length", 1000)
 DB_PATH = STORAGE_CFG.get("database_path", "./storage/napi_brain.db")
 
+RULE_TTL_DAYS = STORAGE_CFG.get("rule_ttl_days", 30)
+MAX_RULES_TOTAL = STORAGE_CFG.get("max_rules_total", 200)
+
 PROVIDER_CFG = CONFIG.get("engine", {}).get("provider", {})
 CHAT_MODEL = PROVIDER_CFG.get("chat_model", "")
 TEACHER_MODEL = PROVIDER_CFG.get("teacher_model", "")

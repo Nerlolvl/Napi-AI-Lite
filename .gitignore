@@ -26,5 +26,8 @@ check_brain.py
 .DS_Store
 Thumbs.db
 
+.pytest_cache/
+tests/__pycache__/
+
 .claude/
 .opencode/

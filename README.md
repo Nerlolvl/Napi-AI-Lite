@@ -55,7 +55,9 @@ napi_ai/
 ├── train_neural_brain.py             # 🧠 Neural weight training (vectorized numpy)
 ├── check_brain.py                    # 🔍 DB and weight diagnostics
 ├── start_napi_chat.bat               # 🪟 Quick launch on Windows
+├── tests/                            # 🧪 pytest suite (rule hygiene)
 ├── requirements.txt                  # 📚 Dependencies
+├── requirements-dev.txt              # 🧪 Dev dependencies (pytest)
 └── README.md                         # 📖 Documentation
 ```
 
@@ -96,8 +98,14 @@ As soon as the answer is delivered to the user:
 If the Teacher is active in `config.yaml`:
 - The `[Question + Napi Answer]` pair is sent to the Teacher
 - `soft_learning/rule_extractor.py` parses the critique and creates a `[REFLECTED_RULE: ...]`
-- The rule is saved to the `reflection_diary` table (SQLite)
+- The rule is saved to the `reflection_diary` table (SQLite) — duplicates reinforce the score instead of accumulating
 - On a similar question next time, Napi will read this rule at **Step 2**
+
+**Rule hygiene** keeps the diary useful over time:
+- **Dedup** — equivalent rules (case-insensitive) reinforce score (capped at 3.0) instead of duplicating
+- **Score & usage** — selection orders by score and recency; each use bumps `hits` and refreshes `last_used_at`
+- **TTL** — rules unused for `rule_ttl_days` (default 30) stop appearing in prompts
+- **Hard cap** — the table never exceeds `max_rules_total` (default 200); best-scored rules survive
 
 ---
 
@@ -118,6 +126,7 @@ If the Teacher is active in `config.yaml`:
 | Semaphore | Max 2 parallel requests to the provider |
 | Gatekeeper | Prefiltering without a model call |
 | RAG via FTS5 | Only relevant chunks are loaded into memory |
+| Rule hygiene | Reflected rules: dedup, score, usage tracking, TTL, hard cap — the diary never bloats |
 
 ---
 
@@ -132,10 +141,13 @@ Napi works with **any OpenAI-compatible API**. In `config.yaml`, set `base_url` 
 | **vLLM** | `http://localhost:8000/v1` | Fast local server |
 | **Together AI** | `https://api.together.xyz/v1` | Cloud inference |
 | **Groq** | `https://api.groq.com/openai/v1` | Fast cloud inference |
+| **DeepSeek** | `https://api.deepseek.com/v1` | `deepseek-chat` / `deepseek-reasoner` |
 | **OpenAI** | `https://api.openai.com/v1` | The original OpenAI API |
 | **Any other** | `https://your-server/v1` | Any server with `/chat/completions` |
 
 The API key is set via an environment variable (default `NAPI_API_KEY`) or directly in `config.yaml`.
+The project loads a `.env` file from the repo root automatically (git-ignored), so the
+recommended setup is `.env` containing `NAPI_API_KEY=sk-...`.
 For basic chat you only need the primary model: a local GGUF in `engine.local` or `provider.base_url` + `provider.chat_model`.
 `teacher_model`, `filter_model`, and `reasoning_model` are optional modules — Napi still answers without them:
 
@@ -222,6 +234,12 @@ python ingest_knowledge.py
 python ingest_knowledge.py "C:\path\to\my\docs"
 ```
 
+Run tests:
+```powershell
+pip install -r requirements-dev.txt
+python -m pytest tests/ -v
+```
+
 ---
 
 ## ⚙️ Configuration (config.yaml)
@@ -234,7 +252,7 @@ All settings live in a single file:
 | `engine.local` | GGUF model: path, n_ctx, n_threads |
 | `engine.provider` | **Provider**: base_url, models (REQUIRED), timeout, concurrency |
 | `gatekeeper` | Prefiltering: length, blocking patterns |
-| `storage` | DB path, history/notes/chunks limits |
+| `storage` | DB path, history/notes/chunks limits, rule hygiene (`rule_ttl_days`, `max_rules_total`) |
 | `soft_learning` | Teacher: score threshold, temperatures |
 | `reasoning` | THINK block: enable, max_context, max_tokens |
 | `server` | Host, port, workers |
