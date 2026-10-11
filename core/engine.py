@@ -18,6 +18,28 @@ _PROVIDER = CONFIG.get("engine", {}).get("provider", {})
 _OPTIONAL_MODELS = ["teacher_model", "filter_model", "reasoning_model"]
 
 
+def choose_backend(
+    *,
+    local_available: bool,
+    remote_ready: bool,
+    prefer_local: bool,
+    force_remote: bool,
+) -> str | None:
+    """Pick the inference backend: "local", "provider", or None (no model).
+
+    Local wins when it is explicitly preferred, or when it is the only
+    available model. force_remote always routes to the provider (used by
+    escalation to get a second opinion).
+    """
+    if not force_remote and (prefer_local or not remote_ready) and local_available:
+        return "local"
+    if remote_ready:
+        return "provider"
+    if local_available:
+        return "local"
+    return None
+
+
 class LocalEngine:
     """GGUF model inference via llama-cpp-python."""
 
@@ -195,23 +217,58 @@ class InferenceEngine:
         temperature: float | None = None,
         max_tokens: int | None = None,
         prefer_local: bool = False,
+        force_remote: bool = False,
     ) -> str:
-        if (prefer_local or not self.remote_ready) and self.local.available:
-            prompt = self._messages_to_prompt(messages)
-            return self.local.generate(
-                prompt,
-                max_tokens=max_tokens or _LOCAL.get("max_tokens", 512),
-            )
-        if not self.remote_ready:
-            raise RuntimeError(
-                "Napi has no primary model configured. Add a local GGUF model "
-                "or set engine.provider.base_url and engine.provider.chat_model in config.yaml"
-            )
-        return await self.remote.chat(
-            model=model,
+        text, _ = await self.chat_with_source(
             messages=messages,
-            temperature=temperature or 0.55,
-            max_tokens=max_tokens or 512,
+            model=model,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            prefer_local=prefer_local,
+            force_remote=force_remote,
+        )
+        return text
+
+    async def chat_with_source(
+        self,
+        *,
+        messages: list[dict[str, Any]],
+        model: str | None = None,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        prefer_local: bool = False,
+        force_remote: bool = False,
+    ) -> tuple[str, str]:
+        """Generate a response and report which backend served it.
+
+        Returns (text, source) where source is "local" or "provider".
+        """
+        backend = choose_backend(
+            local_available=self.local.available,
+            remote_ready=self.remote_ready,
+            prefer_local=prefer_local,
+            force_remote=force_remote,
+        )
+        if backend == "local":
+            prompt = self._messages_to_prompt(messages)
+            return (
+                self.local.generate(
+                    prompt,
+                    max_tokens=max_tokens or _LOCAL.get("max_tokens", 512),
+                ),
+                "local",
+            )
+        if backend == "provider":
+            text = await self.remote.chat(
+                model=model,
+                messages=messages,
+                temperature=temperature or 0.55,
+                max_tokens=max_tokens or 512,
+            )
+            return text, "provider"
+        raise RuntimeError(
+            "Napi has no primary model configured. Add a local GGUF model "
+            "or set engine.provider.base_url and engine.provider.chat_model in config.yaml"
         )
 
     @staticmethod

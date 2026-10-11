@@ -26,6 +26,10 @@ ENABLE_REASONING = REASONING_CFG.get("enabled", True)
 REASONING_MAX_TOKENS = REASONING_CFG.get("max_tokens", 450)
 REASONING_MAX_CONTEXT = REASONING_CFG.get("max_context_chars", 12000)
 
+ESCALATION_CFG = CONFIG.get("escalation", {})
+ENABLE_ESCALATION = ESCALATION_CFG.get("enabled", True)
+ESCALATION_MIN_SCORE = ESCALATION_CFG.get("min_score", 7)
+
 MAX_NOTES = STORAGE_CFG.get("max_memory_notes", 12)
 MAX_CHUNKS = STORAGE_CFG.get("max_knowledge_chunks", 6)
 MAX_RULES = STORAGE_CFG.get("max_reflected_rules", 8)

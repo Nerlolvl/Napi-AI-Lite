@@ -216,6 +216,21 @@ provider is only needed for new, harder questions.
 > True independence from the external AI comes from this distillation step, where the local model
 > actually learns the behavior from teacher-approved answers.
 
+### Escalation (local first, provider backup)
+
+When both a local GGUF model and a provider are configured, Napi answers **local-first**:
+
+1. The local model produces the answer.
+2. The Teacher scores it.
+3. If the score is **below** `escalation.min_score` (default 7) — the local model did **not know** —
+   the same question is re-asked to the provider, re-evaluated, and the better answer is returned.
+4. The provider answer is stored with `source: provider` / `escalated: true` and, when it scores well,
+   flows straight into the distillation dataset.
+
+This is the self-teaching loop: Napi tries on its own, asks the big model only when unsure, and learns
+that answer for next time. With no local model loaded, escalation stays inactive and every request is
+served by the provider as before — the behaviour above only activates once you add a GGUF model.
+
 ---
 
 ## 📦 Dependencies
@@ -292,6 +307,7 @@ All settings live in a single file:
 | `storage` | DB path, history/notes/chunks limits, rule hygiene (`rule_ttl_days`, `max_rules_total`) |
 | `soft_learning` | Teacher: score threshold, reinforcement bonus, temperatures |
 | `reasoning` | THINK block: enable, max_context, max_tokens |
+| `escalation` | Local-first routing: enable, `min_score` to escalate to the provider |
 | `server` | Host, port, workers |
 
 ---

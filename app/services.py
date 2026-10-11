@@ -23,6 +23,27 @@ def helper_model_ready(model: str) -> bool:
     return bool(PROVIDER_CFG.get("base_url") and model)
 
 
+def should_escalate(
+    *,
+    source: str,
+    score: float | None,
+    escalation_enabled: bool,
+    remote_ready: bool,
+    min_score: float,
+) -> bool:
+    """Decide whether a local answer should be re-asked to the provider.
+
+    Escalation only applies to answers the local model produced, only when
+    the provider is available, and only when the teacher scored the local
+    answer below `min_score` (the model was not confident / did not know).
+    """
+    if not escalation_enabled or not remote_ready:
+        return False
+    if source != "local" or score is None:
+        return False
+    return score < min_score
+
+
 async def model_filter(text: str) -> dict | None:
     """Run the filter model and parse its JSON payload; None on any failure."""
     try:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 
 from fastapi import APIRouter, HTTPException
 
@@ -16,12 +17,14 @@ from core.prompt_builder import (
 )
 from core.self_brain import self_brain_answer
 from soft_learning.rule_extractor import process_evaluation
-from soft_learning.teacher_api import evaluate_answer, revise_answer
+from soft_learning.teacher_api import Evaluation, evaluate_answer, revise_answer
 
 from app.config import (
     CHAT_MODEL,
+    ENABLE_ESCALATION,
     ENABLE_REASONING,
     ENABLE_SOFT_LEARNING,
+    ESCALATION_MIN_SCORE,
     FILTER_MODEL,
     MAX_CHUNKS,
     MAX_NOTES,
@@ -49,12 +52,27 @@ from app.services import (
     messages_to_text,
     model_filter,
     rules_from_filter,
+    should_escalate,
 )
 from app.state import brain, count_request, engine, neural_brain
 
 log = logging.getLogger("napi")
 
 router = APIRouter(tags=["chat"])
+
+LOCAL_MODEL_LABEL = "napi-local-gguf"
+
+
+@dataclass
+class AnswerOutcome:
+    answer: str
+    think: str | None
+    model: str
+    improved: bool
+    score: float | None
+    critique: str | None
+    escalated: bool
+    source: str
 
 
 @router.post("/chat", response_model=ChatResponse)
@@ -100,45 +118,36 @@ async def chat(request: ChatRequest) -> ChatResponse:
     if ENABLE_REASONING and helper_model_ready(REASONING_MODEL):
         await _prepend_reasoning_brief(messages, gate.cleaned_text)
 
-    raw_answer = await engine.chat(
-        messages=messages,
-        model=CHAT_MODEL,
-        temperature=TEMPS.get("chat", 0.55),
-        max_tokens=MAX_VISIBLE_TOKENS + 300,
-        prefer_local=engine.local.available and not engine.remote_ready,
-    )
-    answer, think_content = strip_think_tags(raw_answer)
-
-    learning_context = build_learning_context(knowledge_chunks, reflected_rules)
-
     brain.add_message(request.session_id, "user", gate.cleaned_text)
 
-    answer, think_content, improved, score, critique = await _maybe_self_improve(
-        request, gate.cleaned_text, answer, think_content, learning_context, reflected_rules
+    outcome = await _produce_answer(
+        request, messages, gate.cleaned_text, knowledge_chunks, reflected_rules
     )
 
     brain.add_message(
         request.session_id,
         "assistant",
-        answer,
+        outcome.answer,
         metadata={
-            "model": CHAT_MODEL,
+            "model": outcome.model,
+            "source": outcome.source,
+            "escalated": outcome.escalated,
             "language": language,
-            "score": score,
-            "improved": improved,
+            "score": outcome.score,
+            "improved": outcome.improved,
         },
     )
 
     count_request()
 
     return ChatResponse(
-        answer=answer,
+        answer=outcome.answer,
         session_id=request.session_id,
-        model=CHAT_MODEL,
-        improved=improved,
-        evaluation_score=score,
-        critique=critique,
-        think=think_content or None,
+        model=outcome.model,
+        improved=outcome.improved,
+        evaluation_score=outcome.score,
+        critique=outcome.critique,
+        think=outcome.think,
         language=language,
     )
 
@@ -269,16 +278,36 @@ async def _prepend_reasoning_brief(messages: list[dict], cleaned_text: str) -> N
         log.warning("Reasoning failed: %s", exc)
 
 
-async def _maybe_self_improve(
+async def _produce_answer(
     request: ChatRequest,
+    messages: list[dict],
     cleaned_text: str,
-    answer: str,
-    think_content: str | None,
-    learning_context: str | None,
-    applied_rules: list[str],
-) -> tuple[str, str | None, bool, float | None, str | None]:
+    knowledge_chunks: list[dict],
+    reflected_rules: list[str],
+) -> AnswerOutcome:
+    """Generate the answer, evaluate it, and escalate to the provider when needed.
+
+    Local-first escalation: when a local GGUF model is loaded alongside a
+    provider, the local model answers first. If the teacher scores it below
+    escalation.min_score — the local model did not know — the same question
+    is re-asked to the provider. The provider answer is evaluated and stored
+    like any other, so it flows into the distillation dataset.
+    """
+    learning_context = build_learning_context(knowledge_chunks, reflected_rules)
+    local_first = engine.local.available and engine.remote_ready
+
+    raw, source = await engine.chat_with_source(
+        messages=messages,
+        model=CHAT_MODEL,
+        temperature=TEMPS.get("chat", 0.55),
+        max_tokens=MAX_VISIBLE_TOKENS + 300,
+        prefer_local=local_first or (engine.local.available and not engine.remote_ready),
+    )
+    answer, think = strip_think_tags(raw)
+    model_name = LOCAL_MODEL_LABEL if source == "local" else CHAT_MODEL
+
     if not (ENABLE_SOFT_LEARNING and request.self_improve and helper_model_ready(TEACHER_MODEL)):
-        return answer, think_content, False, None, None
+        return AnswerOutcome(answer, think or None, model_name, False, None, None, False, source)
 
     try:
         evaluation = await evaluate_answer(
@@ -288,11 +317,41 @@ async def _maybe_self_improve(
             model=TEACHER_MODEL,
             evaluation_context=learning_context,
         )
-        if evaluation.memory_note:
-            brain.add_note(request.session_id, evaluation.memory_note)
-        for entry in process_evaluation(evaluation):
-            brain.add_reflected_rule(entry["rule"], source=entry["source"], category=entry["category"])
+        _persist_lessons(request.session_id, evaluation)
 
+        escalated = False
+        if should_escalate(
+            source=source,
+            score=evaluation.score,
+            escalation_enabled=ENABLE_ESCALATION,
+            remote_ready=engine.remote_ready,
+            min_score=ESCALATION_MIN_SCORE,
+        ):
+            log.info(
+                "Escalating to provider: local answer scored %.1f (< %.1f)",
+                evaluation.score, ESCALATION_MIN_SCORE,
+            )
+            raw, source = await engine.chat_with_source(
+                messages=messages,
+                model=CHAT_MODEL,
+                temperature=TEMPS.get("chat", 0.55),
+                max_tokens=MAX_VISIBLE_TOKENS + 300,
+                force_remote=True,
+            )
+            answer, provider_think = strip_think_tags(raw)
+            model_name = CHAT_MODEL
+            escalated = True
+            evaluation = await evaluate_answer(
+                engine,
+                user_message=cleaned_text,
+                answer=answer,
+                model=TEACHER_MODEL,
+                evaluation_context=learning_context,
+            )
+            _persist_lessons(request.session_id, evaluation)
+            think = provider_think or think
+
+        improved = False
         if evaluation.needs_revision and evaluation.score < MIN_SCORE_REVISION:
             revised = await revise_answer(
                 engine,
@@ -304,15 +363,25 @@ async def _maybe_self_improve(
             )
             answer, revised_think = strip_think_tags(revised)
             if revised_think:
-                think_content = revised_think
-            return answer, think_content, True, evaluation.score, evaluation.critique
-
-        if evaluation.score >= MIN_SCORE_REVISION:
-            reinforced = brain.reinforce_rules(applied_rules, REINFORCE_BONUS)
+                think = revised_think
+            improved = True
+        elif evaluation.score >= MIN_SCORE_REVISION:
+            reinforced = brain.reinforce_rules(reflected_rules, REINFORCE_BONUS)
             if reinforced:
                 log.debug("Reinforced %d rules after good answer (score=%.1f)", reinforced, evaluation.score)
 
-        return answer, think_content, False, evaluation.score, evaluation.critique
+        return AnswerOutcome(
+            answer, think or None, model_name, improved,
+            evaluation.score, evaluation.critique, escalated, source,
+        )
     except Exception as exc:
         log.warning("Soft learning failed: %s", exc)
-        return answer, think_content, False, None, None
+        return AnswerOutcome(answer, think or None, model_name, False, None, None, False, source)
+
+
+def _persist_lessons(session_id: str, evaluation: Evaluation) -> None:
+    """Store notes and reflected rules produced by one evaluation."""
+    if evaluation.memory_note:
+        brain.add_note(session_id, evaluation.memory_note)
+    for entry in process_evaluation(evaluation):
+        brain.add_reflected_rule(entry["rule"], source=entry["source"], category=entry["category"])

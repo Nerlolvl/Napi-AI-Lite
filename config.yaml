@@ -89,6 +89,15 @@ reasoning:
   max_context_chars: 12000
   max_tokens: 450
 
+# === Escalation (local first, provider fallback) ===
+# When a local GGUF model is loaded, it answers first. If the Teacher scores
+# that answer below min_score (the local model was unsure), the same question
+# is re-asked to the provider and the better answer is returned. Provider
+# answers are collected for distillation, so Napi learns what it did not know.
+escalation:
+  enabled: true
+  min_score: 7
+
 # === Server ===
 server:
   host: "0.0.0.0"
