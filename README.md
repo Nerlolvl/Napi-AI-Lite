@@ -52,10 +52,13 @@ napi_ai/
 ├── main.py                           # 🚀 Entry point: FastAPI app assembly + graceful shutdown
 ├── chat_terminal.py                  # 💬 Terminal chat client
 ├── ingest_knowledge.py               # 📥 Loads knowledge/ into SQLite
-├── train_neural_brain.py             # 🧠 Neural weight training (vectorized numpy)
-├── check_brain.py                    # 🔍 DB and weight diagnostics
+├── export_training_data.py           # 📤 Exports teacher-approved dialogues to a fine-tune dataset
+├── train_distill.py                  # 🎓 LoRA fine-tuning on the distilled dataset (GPU)
+├── train_neural_brain.py             # 🧠 Neural weight training (local tool, git-ignored)
+├── check_brain.py                    # 🔍 DB diagnostics (local tool, git-ignored)
+├── data/                             # 📊 Exported datasets / adapters (git-ignored)
 ├── start_napi_chat.bat               # 🪟 Quick launch on Windows
-├── tests/                            # 🧪 pytest suite (rule hygiene)
+├── tests/                            # 🧪 pytest suite (rule hygiene, learning, distillation)
 ├── requirements.txt                  # 📚 Dependencies
 ├── requirements-dev.txt              # 🧪 Dev dependencies (pytest)
 └── README.md                         # 📖 Documentation
@@ -179,6 +182,39 @@ Train/retrain the weights:
 ```powershell
 python train_neural_brain.py
 ```
+
+---
+
+## 🧪 Distillation (Teaching Napi to Stand on Its Own)
+
+Soft learning turns experience into **rules and knowledge** (prompt context). Distillation
+goes further: it turns teacher-approved dialogues into a **fine-tuned local model**, so Napi
+needs the external provider less and less. The external model becomes an examiner, not the brain.
+
+The loop:
+
+1. **Chat normally** — every answer is scored by the Teacher (`evaluation_score`).
+2. **Export the good ones** into a fine-tune dataset:
+   ```powershell
+   python export_training_data.py --min-score 8
+   # -> ./data/distill_dataset.jsonl (OpenAI-style chat format)
+   ```
+   Only answers that scored at least `--min-score` are exported; questions are deduplicated.
+3. **Fine-tune a small local model** on the dataset. Do this on a GPU machine or Colab/Kaggle —
+   the 2 CPU / 2 GB box is for inference, not training:
+   ```powershell
+   pip install torch transformers peft datasets
+   python train_distill.py --dataset ./data/distill_dataset.jsonl
+   ```
+4. **Convert to GGUF** and point Napi at it (instructions are printed by `train_distill.py`),
+   then flip `engine.local.enabled: true` in `config.yaml`.
+
+As the dataset and the rule diary grow, more traffic is served by the local model and the
+provider is only needed for new, harder questions.
+
+> Honest note: rules and knowledge are prompt context, not weight updates — they help any model.
+> True independence from the external AI comes from this distillation step, where the local model
+> actually learns the behavior from teacher-approved answers.
 
 ---
 

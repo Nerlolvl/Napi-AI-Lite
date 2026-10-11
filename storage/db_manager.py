@@ -188,6 +188,15 @@ class NapiBrain:
             ).fetchall()
         return [{"role": row["role"], "content": row["content"]} for row in reversed(rows)]
 
+    def all_messages(self) -> list[sqlite3.Row]:
+        """Return every message row, ordered per session (offline tooling)."""
+        with self._lock:
+            conn = self._get_conn()
+            return conn.execute(
+                "SELECT id, session_id, role, content, metadata "
+                "FROM messages ORDER BY session_id, id"
+            ).fetchall()
+
     def add_note(self, session_id: str, note: str) -> None:
         clean_note = note.strip()[: self._max_note_length]
         if not clean_note:

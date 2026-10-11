@@ -19,6 +19,7 @@ napi_brain.db-wal
 data/
 
 train_*.py
+!train_distill.py
 check_brain.py
 
 *.log
