@@ -31,15 +31,16 @@ engine:
   # Together AI:      base_url: "https://api.together.xyz/v1"
   # Groq:             base_url: "https://api.groq.com/openai/v1"
   # OpenAI:           base_url: "https://api.openai.com/v1"
+  # DeepSeek:         base_url: "https://api.deepseek.com/v1"
   provider:
     enabled: true
     api_key_env: "NAPI_API_KEY"
     api_key: ""
-    base_url: ""
-    chat_model: ""
-    teacher_model: ""
-    filter_model: ""
-    reasoning_model: ""
+    base_url: "https://api.deepseek.com/v1"
+    chat_model: "deepseek-chat"
+    teacher_model: "deepseek-chat"
+    filter_model: "deepseek-chat"
+    reasoning_model: "deepseek-chat"
     vision_model: ""
     timeout_seconds: 90
     max_concurrent: 2
@@ -63,6 +64,10 @@ storage:
   max_knowledge_chunks: 6
   max_reflected_rules: 8
   note_max_length: 1000
+  # Rule hygiene: rules unused for rule_ttl_days expire; the table never
+  # exceeds max_rules_total rows (best-scored rules are kept).
+  rule_ttl_days: 30
+  max_rules_total: 200
 
 # === Soft Learning (Teacher) ===
 soft_learning:
